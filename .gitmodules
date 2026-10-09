@@ -1,0 +1,3 @@
+[submodule "TinyRL"]
+	path = TinyRL
+	url = https://github.com/mohmdelsayed/TinyRL.git
