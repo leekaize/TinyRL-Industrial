@@ -1,0 +1,747 @@
+[
+    {
+        "id": "f2167687c85f59b3",
+        "type": "tab",
+        "label": "Home",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "35e7927e67ce7353",
+        "type": "comment",
+        "z": "f2167687c85f59b3",
+        "name": "README — import + ISA-101 + Tier0-Edge adaptation",
+        "info": "## TinyRL UNS alarm dashboard (ISA-101 style) — import notes\n\n**Requires**: palette `node-red-dashboard` and `node-red-node-ui-table` (Menu -> Manage palette -> Install) + built-in MQTT nodes.\n\n**Import**: Menu -> Import -> select file -> Deploy. Dashboard: `http://<node-red-host>:1880/ui`\nTheme note: keep the dashboard theme light/grey (Dashboard -> Theme) to match the ISA-101 baseline.\n\n**ISA-101 design rules applied**\n- Greyscale baseline: healthy states (IDLE / LEARNING / OK) are GREY; colour is reserved for abnormal\n- RED = alarm condition; YELLOW = attention/diagnostic (unlabeled 'unknown' open ask)\n- Command buttons are neutral; only LABEL is yellow (it answers an attention state)\n- Level-1 display: state banner + confidence trend + event list + command row\n- Detail data (fw, features, lib_max, node identity) intentionally left to Tier0\n\n**Broker**: default `192.168.201.99:1883` (from uns_namespace.json) — edit the\n\"UNS broker — EDIT ME\" config node.\n**Tier0-Edge**: point at your UNS broker (default `mqtt.tier0.dev:1883`) with the credentials\ngenerated on the Edge tab. Inside Tier0's built-in Node-RED, delete this broker config and\nre-select the UNS broker on each mqtt node (Tier0 binds the embedded broker by flow name).\n\n**Topics** (UNS_BASE = `v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01`)\n- subscribe: `State/condition`, `State/event`, `Action/feedback` (parsed JSON)\n- publish: `Action/feedback`, QoS 1, retain=false:\n  `{\"action\":\"start\"}` | `{\"action\":\"normal\"}` | `{\"action\":\"fault\"}` |\n  `{\"action\":\"label\",\"label\":\"<slug>\",\"by\":\"human|agent|console\"}`\n\n**Cadence note**: `State/condition` is change-driven + retained (quiet = healthy), so the\n\"last update [s]\" counter is informational only — it ticks via a 5 s heartbeat inject and\ndoes NOT raise a stale alarm.\n\n**SIM injects**: editor-only, for offline testing — ignore in production.\n",
+        "x": 380,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "ac93aa655671cdae",
+        "type": "mqtt in",
+        "z": "f2167687c85f59b3",
+        "name": "in: State/condition",
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/condition",
+        "qos": "2",
+        "datatype": "json",
+        "broker": "cfg_broker_uns",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 390,
+        "y": 80,
+        "wires": [
+            [
+                "c0bb28d1ee0c25ce"
+            ]
+        ]
+    },
+    {
+        "id": "0bb3d06f39b55d28",
+        "type": "mqtt in",
+        "z": "f2167687c85f59b3",
+        "name": "in: State/event",
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/event",
+        "qos": "2",
+        "datatype": "json",
+        "broker": "cfg_broker_uns",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 390,
+        "y": 140,
+        "wires": [
+            [
+                "8fb570c35e38ad70"
+            ]
+        ]
+    },
+    {
+        "id": "695b8b19e121550d",
+        "type": "mqtt in",
+        "z": "f2167687c85f59b3",
+        "name": "in: Action/feedback (echo)",
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/Action/feedback",
+        "qos": "2",
+        "datatype": "json",
+        "broker": "cfg_broker_uns",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 400,
+        "y": 200,
+        "wires": [
+            [
+                "7c3d244d57eb396c"
+            ]
+        ]
+    },
+    {
+        "id": "c18e200e34c0d218",
+        "type": "inject",
+        "z": "f2167687c85f59b3",
+        "name": "heartbeat 5s (age ticker)",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "5",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 1,
+        "topic": "",
+        "payload": "heartbeat",
+        "payloadType": "str",
+        "x": 400,
+        "y": 280,
+        "wires": [
+            [
+                "c0bb28d1ee0c25ce"
+            ]
+        ]
+    },
+    {
+        "id": "95ea395d762e3e7e",
+        "type": "inject",
+        "z": "f2167687c85f59b3",
+        "name": "SIM State/condition (alarm)",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/condition",
+        "payload": "{\"state\": \"alarm\", \"condition_id\": \"belt_slip\", \"confidence\": 0.62, \"episode_s\": 38, \"ts_ms\": 4287361}",
+        "payloadType": "json",
+        "x": 410,
+        "y": 340,
+        "wires": [
+            [
+                "c0bb28d1ee0c25ce"
+            ]
+        ]
+    },
+    {
+        "id": "89d20e42f3cdd7e7",
+        "type": "inject",
+        "z": "f2167687c85f59b3",
+        "name": "SIM State/event (close)",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/event",
+        "payload": "{\"event\": \"close\", \"condition_id\": \"belt_slip\", \"severity\": \"alarm\", \"duration_s\": 38, \"summary\": \"g100-01: i=4.06A, slip=1.13Hz, vdc=571V, tq=77.2% for 38s\", \"meas\": {\"i\": 4.06, \"slip\": 1.13, \"vdc\": 570.6, \"tq\": 77.2}, \"ts_ms\": 4287361}",
+        "payloadType": "json",
+        "x": 410,
+        "y": 400,
+        "wires": [
+            [
+                "8fb570c35e38ad70"
+            ]
+        ]
+    },
+    {
+        "id": "c0bb28d1ee0c25ce",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "condition state + banner",
+        "func": "// In: parsed payload of <UNS_BASE>/State/condition\n//     OR {\"payload\":\"heartbeat\"} from the 5 s repeater (keeps the age counter ticking)\n// Contract note: State/condition is change-driven + retained, so a quiet node is HEALTHY.\n// Age is informational only - no stale alarm.\nlet cur = flow.get(\"cond\") || null;\nif (msg.payload === \"heartbeat\") {\n    if (!cur) { return [null, null]; }        // waiting for first update\n    cur.age_s = Math.round((Date.now() - cur.ts) / 1000);\n} else {\n    const p = msg.payload || {};\n    cur = {\n        state: p.state || \"unknown_state\",\n        condition_id: p.condition_id || \"-\",\n        confidence: (typeof p.confidence === \"number\") ? p.confidence : 0,\n        episode_s: (typeof p.episode_s === \"number\") ? p.episode_s : 0,\n        ts: Date.now(),\n        age_s: 0\n    };\n}\nflow.set(\"cond\", cur);\n\n// Banner classification (ISA-101: grey when healthy, colour only for abnormal)\nlet k, line1, line2;\nif (cur.state === \"alarm\" && cur.condition_id === \"unknown\") {\n    k = \"alarm\";\n    line1 = \"ALARM\";\n    line2 = \"UNLABELED CONDITION - answer with LABEL (confidence \" +\n        Math.round(cur.confidence * 100) + \"%, episode \" + cur.episode_s + \" s)\";\n} else if (cur.state === \"alarm\") {\n    k = \"alarm\";\n    line1 = \"ALARM\";\n    line2 = (cur.condition_id || \"?\") + \" - confidence \" + Math.round(cur.confidence * 100) +\n        \"% - episode \" + cur.episode_s + \" s\";\n} else if (cur.condition_id === \"unknown\") {\n    k = \"attention\";\n    line1 = \"UNLABELED CONDITION\";\n    line2 = \"open ask - answer with LABEL (confidence \" + Math.round(cur.confidence * 100) + \"%)\";\n} else if (cur.state === \"learn\") {\n    k = \"info\"; line1 = \"LEARNING\"; line2 = \"capturing normal-behaviour statistics\";\n} else if (cur.state === \"idle\") {\n    k = \"info\"; line1 = \"IDLE\"; line2 = \"send START to begin learning\";\n} else if (cur.state === \"ok\") {\n    k = \"info\"; line1 = \"OK\"; line2 = \"monitoring - last update \" + cur.age_s + \" s ago\";\n} else {\n    k = \"info\"; line1 = cur.state.toUpperCase(); line2 = \" \";\n}\n\nconst out1 = { payload: {\n    k: k, line1: line1, line2: line2,\n    state: cur.state, condition_id: cur.condition_id,\n    confidence: cur.confidence, episode_s: cur.episode_s, age_s: cur.age_s\n} };\n// out2: numeric confidence for the trend - real condition messages only (not heartbeats)\nconst out2 = (msg.payload === \"heartbeat\") ? null : { payload: cur.confidence, topic: \"confidence\" };\nreturn [out1, out2];\n",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 710,
+        "y": 100,
+        "wires": [
+            [
+                "1e7cd092778091e7",
+                "cba4d599b170e56b",
+                "c0c7880c3bbe955c",
+                "c229078cbb931192",
+                "903aed643bd0fe47"
+            ],
+            [
+                "8f2a1f89f9279160"
+            ]
+        ]
+    },
+    {
+        "id": "8fb570c35e38ad70",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "event log (rolling 15)",
+        "func": "// In: parsed payload of <UNS_BASE>/State/event\n// Keeps a rolling buffer of the last 15 events in flow context 'eventRows'.\nconst p = msg.payload || {};\nconst ts = new Date().toISOString().replace(\"T\", \" \").slice(0, 19);\nconst row = {\n    ts: ts,\n    event: p.event || \"\",\n    condition: p.condition_id || \"\",\n    severity: p.severity || \"\",\n    dur_s: (p.duration_s === undefined || p.duration_s === null) ? \"\" : p.duration_s,\n    summary: p.summary || \"\"\n};\nlet rows = flow.get(\"eventRows\") || [];\nrows.unshift(row);\nif (rows.length > 15) { rows = rows.slice(0, 15); }\nflow.set(\"eventRows\", rows);\nreturn { payload: rows };\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 700,
+        "y": 160,
+        "wires": [
+            [
+                "a35faaf77376897e"
+            ]
+        ]
+    },
+    {
+        "id": "d417f9bdbcab8c0e",
+        "type": "change",
+        "z": "f2167687c85f59b3",
+        "name": "store label slug",
+        "rules": [
+            {
+                "t": "set",
+                "p": "labelSlug",
+                "pt": "flow",
+                "to": "payload",
+                "tot": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 700,
+        "y": 460,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "9b81d14b62209cc2",
+        "type": "change",
+        "z": "f2167687c85f59b3",
+        "name": "store by",
+        "rules": [
+            {
+                "t": "set",
+                "p": "labelBy",
+                "pt": "flow",
+                "to": "payload",
+                "tot": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 700,
+        "y": 520,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "04bfa1dc40c68891",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "build label action",
+        "func": "// Builds the Action/feedback payload for action=label\n// (answers an open 'unknown' episode; label slug + 'by' come from dashboard inputs)\nconst slug = String(flow.get(\"labelSlug\") || \"\").trim();\nconst by = flow.get(\"labelBy\") || \"human\";\nreturn { payload: { action: \"label\", label: slug || \"unknown_condition\", by: by } };\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 940,
+        "y": 490,
+        "wires": [
+            [
+                "ee14f6a4287cf3f6"
+            ]
+        ]
+    },
+    {
+        "id": "ee14f6a4287cf3f6",
+        "type": "mqtt out",
+        "z": "f2167687c85f59b3",
+        "name": "out: Action/feedback",
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/Action/feedback",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "cfg_broker_uns",
+        "x": 1190,
+        "y": 490,
+        "wires": []
+    },
+    {
+        "id": "1e7cd092778091e7",
+        "type": "ui_template",
+        "z": "f2167687c85f59b3",
+        "group": "grp_condition",
+        "name": "state banner",
+        "order": 1,
+        "width": "0",
+        "height": "0",
+        "format": "<div class=\"isa-banner\" ng-class=\"{'isa-alarm': msg.payload.k==='alarm',\n                                     'isa-attention': msg.payload.k==='attention'}\">\n  <div class=\"isa-big\">{{msg.payload.line1}}</div>\n  <div class=\"isa-sub\">{{msg.payload.line2}}</div>\n</div>\n<style>\n.isa-banner { height:100%; display:flex; flex-direction:column; justify-content:center;\n  text-align:center; border-radius:3px; background:#cfcfcf; color:#1a1a1a;\n  font-family:Arial,Helvetica,sans-serif; padding:6px; }\n.isa-alarm     { background:#c00000; color:#ffffff; }\n.isa-attention { background:#ffc000; color:#1a1a1a; }\n.isa-big       { font-size:30px; font-weight:700; letter-spacing:2px; line-height:1.1; }\n.isa-sub       { font-size:14px; margin-top:4px; }\n</style>",
+        "storeOutMessages": true,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 1070,
+        "y": 60,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "cba4d599b170e56b",
+        "type": "ui_text",
+        "z": "f2167687c85f59b3",
+        "group": "grp_condition",
+        "order": 2,
+        "width": "0",
+        "height": 0,
+        "name": "",
+        "label": "condition_id",
+        "format": "{{msg.payload.condition_id}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 15,
+        "color": "#1a1a1a",
+        "x": 1070,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "c0c7880c3bbe955c",
+        "type": "ui_text",
+        "z": "f2167687c85f59b3",
+        "group": "grp_condition",
+        "order": 3,
+        "width": "0",
+        "height": 0,
+        "name": "",
+        "label": "confidence",
+        "format": "{{msg.payload.confidence}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 15,
+        "color": "#1a1a1a",
+        "x": 1200,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "c229078cbb931192",
+        "type": "ui_text",
+        "z": "f2167687c85f59b3",
+        "group": "grp_condition",
+        "order": 4,
+        "width": "0",
+        "height": 0,
+        "name": "",
+        "label": "episode [s]",
+        "format": "{{msg.payload.episode_s}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 15,
+        "color": "#1a1a1a",
+        "x": 1330,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "903aed643bd0fe47",
+        "type": "ui_text",
+        "z": "f2167687c85f59b3",
+        "group": "grp_condition",
+        "order": 5,
+        "width": "0",
+        "height": 0,
+        "name": "",
+        "label": "last update [s]",
+        "format": "{{msg.payload.age_s}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 15,
+        "color": "#1a1a1a",
+        "x": 1070,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "8f2a1f89f9279160",
+        "type": "ui_chart",
+        "z": "f2167687c85f59b3",
+        "name": "",
+        "group": "grp_condition",
+        "order": 6,
+        "width": "0",
+        "height": "0",
+        "label": "confidence trend",
+        "chartType": "line",
+        "legend": "false",
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "waiting for data...",
+        "dot": false,
+        "ymin": "0",
+        "ymax": "1",
+        "removeOlder": "1",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "3600",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#545454",
+            "#8c8c8c",
+            "#b8b8b8",
+            "#2ca02c",
+            "#98df8a",
+            "#d62728",
+            "#ff9896",
+            "#9467bd",
+            "#c5b0d5"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1070,
+        "y": 220,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a35faaf77376897e",
+        "type": "ui_template",
+        "z": "f2167687c85f59b3",
+        "group": "grp_events",
+        "name": "event log",
+        "order": 1,
+        "width": "6",
+        "height": "6",
+        "format": "<table class=\"isa-ev\">\n  <tr><th>time</th><th>event</th><th>condition</th><th>sev</th><th>s</th><th>summary</th></tr>\n  <tr ng-repeat=\"r in msg.payload track by $index\" ng-class=\"{'isa-ev-alarm': r.severity==='alarm'}\">\n    <td>{{r.ts}}</td><td>{{r.event}}</td><td>{{r.condition}}</td>\n    <td>{{r.severity}}</td><td>{{r.dur_s}}</td><td class=\"isa-ev-sum\">{{r.summary}}</td>\n  </tr>\n</table>\n<style>\n.isa-ev { width:100%; border-collapse:collapse; font-size:12px;\n  font-family:Arial,Helvetica,sans-serif; color:#1a1a1a; }\n.isa-ev th { text-align:left; border-bottom:1px solid #8f8f8f; padding:2px 6px;\n  color:#5f5f5f; font-weight:600; }\n.isa-ev td { border-bottom:1px solid #e0e0e0; padding:2px 6px; }\n.isa-ev-alarm td { color:#c00000; font-weight:600; }\n.isa-ev-sum { max-width:380px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }\n</style>",
+        "fwdInMessages": false,
+        "className": "",
+        "x": 1070,
+        "y": 300,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "ab6332dc9ecd7e3f",
+        "type": "ui_button",
+        "z": "f2167687c85f59b3",
+        "name": "",
+        "group": "grp_actions",
+        "order": 1,
+        "width": "0",
+        "height": 0,
+        "passthru": false,
+        "label": "START learning",
+        "tooltip": "begin learning (machine at NORMAL load)",
+        "color": "#1a1a1a",
+        "bgcolor": "#c8c8c8",
+        "className": "",
+        "icon": "",
+        "payload": "start",
+        "payloadType": "str",
+        "topic": "start",
+        "topicType": "str",
+        "x": 890,
+        "y": 260,
+        "wires": [
+            [
+                "ee14f6a4287cf3f6"
+            ]
+        ]
+    },
+    {
+        "id": "5bf572b5c61294c0",
+        "type": "ui_button",
+        "z": "f2167687c85f59b3",
+        "name": "",
+        "group": "grp_actions",
+        "order": 2,
+        "width": "0",
+        "height": 0,
+        "passthru": false,
+        "label": "NORMAL (false alarm)",
+        "tooltip": "false alarm -> theta += 10% (capped), episode closes",
+        "color": "#1a1a1a",
+        "bgcolor": "#c8c8c8",
+        "className": "",
+        "icon": "",
+        "payload": "normal",
+        "payloadType": "str",
+        "topic": "normal",
+        "topicType": "str",
+        "x": 890,
+        "y": 300,
+        "wires": [
+            [
+                "ee14f6a4287cf3f6"
+            ]
+        ]
+    },
+    {
+        "id": "2123e3c032e8a5bc",
+        "type": "ui_button",
+        "z": "f2167687c85f59b3",
+        "name": "",
+        "group": "grp_actions",
+        "order": 3,
+        "width": "0",
+        "height": 0,
+        "passthru": false,
+        "label": "FAULT (confirmed)",
+        "tooltip": "confirmed fault -> theta -= 5% (floored)",
+        "color": "#1a1a1a",
+        "bgcolor": "#c8c8c8",
+        "className": "",
+        "icon": "",
+        "payload": "fault",
+        "payloadType": "str",
+        "topic": "fault",
+        "topicType": "str",
+        "x": 890,
+        "y": 340,
+        "wires": [
+            [
+                "ee14f6a4287cf3f6"
+            ]
+        ]
+    },
+    {
+        "id": "e715d57ce1407cf9",
+        "type": "ui_text_input",
+        "z": "f2167687c85f59b3",
+        "name": "label slug",
+        "label": "condition label",
+        "tooltip": "slug saved for the LABEL button",
+        "group": "grp_actions",
+        "order": 4,
+        "width": "0",
+        "height": 0,
+        "passthru": false,
+        "mode": "text",
+        "delay": 300,
+        "topic": "labelSlug",
+        "sendOnBlur": true,
+        "className": "",
+        "topicType": "str",
+        "x": 890,
+        "y": 380,
+        "wires": [
+            [
+                "d417f9bdbcab8c0e"
+            ]
+        ]
+    },
+    {
+        "id": "a402bd1e0ea9b65c",
+        "type": "ui_dropdown",
+        "z": "f2167687c85f59b3",
+        "name": "by",
+        "label": "by",
+        "tooltip": "who confirms the label",
+        "place": "Select",
+        "group": "grp_actions",
+        "order": 5,
+        "width": "0",
+        "height": 0,
+        "passthru": false,
+        "multiple": false,
+        "options": [
+            {
+                "label": "human",
+                "value": "human",
+                "type": "str"
+            },
+            {
+                "label": "agent",
+                "value": "agent",
+                "type": "str"
+            },
+            {
+                "label": "console",
+                "value": "console",
+                "type": "str"
+            }
+        ],
+        "payload": "",
+        "topic": "labelBy",
+        "topicType": "str",
+        "className": "",
+        "x": 890,
+        "y": 420,
+        "wires": [
+            [
+                "9b81d14b62209cc2"
+            ]
+        ]
+    },
+    {
+        "id": "52b643129b96f6b4",
+        "type": "ui_button",
+        "z": "f2167687c85f59b3",
+        "name": "",
+        "group": "grp_actions",
+        "order": 6,
+        "width": "0",
+        "height": 0,
+        "passthru": false,
+        "label": "LABEL episode",
+        "tooltip": "answer an open 'unknown' episode with slug + by",
+        "color": "#1a1a1a",
+        "bgcolor": "#ffc000",
+        "className": "",
+        "icon": "",
+        "payload": "label",
+        "payloadType": "str",
+        "topic": "label",
+        "topicType": "str",
+        "x": 890,
+        "y": 460,
+        "wires": [
+            [
+                "04bfa1dc40c68891"
+            ]
+        ]
+    },
+    {
+        "id": "7c3d244d57eb396c",
+        "type": "ui_text",
+        "z": "f2167687c85f59b3",
+        "group": "grp_actions",
+        "order": 7,
+        "width": "0",
+        "height": 0,
+        "name": "",
+        "label": "last command",
+        "format": "{{msg.payload.action}}{{msg.payload.label ? ' : ' + msg.payload.label : ''}}{{msg.payload.by ? ' (' + msg.payload.by + ')' : ''}}",
+        "layout": "row-left",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 14,
+        "color": "#1a1a1a",
+        "x": 1110,
+        "y": 460,
+        "wires": []
+    },
+    {
+        "id": "cfg_broker_uns",
+        "type": "mqtt-broker",
+        "name": "UNS broker — EDIT ME",
+        "broker": "192.168.201.99",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "grp_condition",
+        "type": "ui_group",
+        "name": "State/condition",
+        "tab": "18a510a20cb04067",
+        "order": 1,
+        "disp": true,
+        "width": "6",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "grp_events",
+        "type": "ui_group",
+        "name": "State/event",
+        "tab": "18a510a20cb04067",
+        "order": 2,
+        "disp": true,
+        "width": "6",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "grp_actions",
+        "type": "ui_group",
+        "name": "Action/feedback (central -> node)",
+        "tab": "18a510a20cb04067",
+        "order": 4,
+        "disp": true,
+        "width": "6",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "18a510a20cb04067",
+        "type": "ui_tab",
+        "name": "Home",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "2d5962a7c42448c5",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-dashboard": "3.6.6"
+        }
+    }
+]

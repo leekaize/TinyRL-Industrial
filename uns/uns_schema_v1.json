@@ -1,0 +1,67 @@
+{
+  "schema": "tinyrl-node/uns-contract/v1.1",
+  "description": "Payload contract between TinyRL edge nodes and the central system (human UI or AI agent). Envelope fields are generic; meas keys come from the node's feature profile (see State/node_info).",
+  "topics": {
+    "State/condition": {
+      "retained": true,
+      "cadence": "on state or condition_id change + on (re)connect",
+      "payload": {
+        "state":        { "type": "enum", "values": ["idle", "learn", "ok", "alarm"],
+                          "desc": "idle=fresh node, learn=calibrating/fitting, ok=monitoring quiet, alarm=episode active" },
+        "condition_id": { "type": "enum", "values": ["idle", "learning", "normal", "<label>", "unknown"],
+                          "desc": "<label> = slug from condition library; unknown = OPEN ASK for a label" },
+        "confidence":   { "type": "float 0..1", "desc": "1 - score/theta when ok; (score-theta)/theta when alarm" },
+        "episode_s":    { "type": "int", "desc": "seconds since episode open (0 when quiet)" },
+        "ts_ms":        { "type": "int", "desc": "device millis()" }
+      }
+    },
+    "State/event": {
+      "retained": false,
+      "cadence": "per episode transition: open | close | label",
+      "payload": {
+        "event":        { "type": "enum", "values": ["open", "close", "label"] },
+        "condition_id": { "type": "string", "desc": "label or 'unknown'" },
+        "severity":     { "type": "enum", "values": ["alarm", "info"] },
+        "duration_s":   { "type": "int" },
+        "summary":      { "type": "string", "desc": "human-readable one-liner, e.g. 'g100-01: i=4.06A, slip=1.13Hz, vdc=571V, tq=77.2% for 38s'" },
+        "meas":         { "type": "object", "desc": "feature -> mean value over the episode, keys = profile feature names",
+                          "example": { "i": 4.06, "slip": 1.13, "vdc": 570.6, "tq": 77.2 } },
+        "ts_ms":        { "type": "int" }
+      }
+    },
+    "State/node_info": {
+      "retained": true,
+      "cadence": "every (re)connect - the discovery document",
+      "payload": {
+        "schema":    { "type": "string" },
+        "node_type": { "type": "string", "example": "vfd_g100" },
+        "dev_id":    { "type": "string" },
+        "features":  { "type": "array", "desc": "[{name, unit}...] - defines the meas key vocabulary" },
+        "lib_max":   { "type": "int", "desc": "condition library capacity" },
+        "fw":        { "type": "string" }
+      }
+    },
+    "Action/feedback": {
+      "retained": false,
+      "direction": "central -> node, QoS1, the ONLY input channel",
+      "actions": {
+        "start":  { "payload": { "action": "start" }, "desc": "begin learning (machine at NORMAL load)" },
+        "label":  { "payload": { "action": "label", "label": "belt_slip", "by": "agent-01" },
+                    "desc": "answer an open 'unknown' episode; creates or reinforces a condition; by = human|agent|console" },
+        "normal": { "payload": { "action": "normal" }, "desc": "false alarm -> theta += 10% (capped), episode closes" },
+        "fault":  { "payload": { "action": "fault" }, "desc": "confirmed fault -> theta -= 5% (floored)" }
+      }
+    }
+  },
+  "state_persistence": {
+    "model_bin": "score stats + theta + frozen ranges + normalizer moments (v4)",
+    "net_bin":   "TinyRL network weights (Linear layers verbatim)",
+    "conditions_jsonl": "one condition per line: id, centroid c[], count, first/last, src"
+  },
+  "breaking_changes_vs_mvp_v3": [
+    "State/event: flat i_mean/slip_mean/vdc_mean/tq_mean replaced by generic 'meas' map",
+    "Action/feedback 'label' now also accepts by=agent (was human|console only in practice)",
+    "Old /model.bin (v3 histogram model) is ignored - press 's' to relearn once",
+    "Strtof-separator bug in conditions.jsonl reload fixed: centroids no longer zero out after reboot"
+  ]
+}

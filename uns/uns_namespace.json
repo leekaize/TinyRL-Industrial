@@ -1,0 +1,36 @@
+{
+  "schema": "tinyrl-node/uns-namespace/v1",
+  "description": "Site topology + node registry for TinyRL semantic condition nodes. Rename the site here AND in experiments/<node>/main.cpp (UNS_BASE). Import this into the central UNS/MES/ERP side so State/* topics map into the plant namespace.",
+  "mqtt": {
+    "host": "192.168.201.99",
+    "port": 1883,
+    "qos_publish": 0,
+    "qos_feedback": 1
+  },
+  "site": {
+    "enterprise": "Plant01",
+    "area": "Motor-Test-Area",
+    "line": "Line1",
+    "workcell": "Drive-Station-01"
+  },
+  "nodes": [
+    {
+      "dev_id": "g100-01",
+      "node_type": "vfd_g100",
+      "uns_base": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01",
+      "hardware": "ESP32-S3 N8R8 + MAX485 -> LSIS LSLV-G100",
+      "features": [
+        { "name": "i",    "unit": "A",  "description": "RMS output current" },
+        { "name": "slip", "unit": "Hz", "description": "|f_ref - f_out|" },
+        { "name": "vdc",  "unit": "V",  "description": "DC bus voltage" },
+        { "name": "tq",   "unit": "%",  "description": "|torque| of rated" }
+      ],
+      "topics": {
+        "state_condition": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/condition",
+        "state_event":     "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/event",
+        "state_node_info": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/node_info",
+        "action_feedback": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/Action/feedback"
+      }
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+- g100_regs.h                   LSLV-G100 register map + scaling (bench-proven)
+- g100_modbus.h/.cpp            Modbus-RTU transport (verbatim from MVP)
+- g100_sensor.h/.cpp            G100Sensor : ISensorNode → {i, slip, vdc, tq}
