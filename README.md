@@ -1,6 +1,6 @@
 # TinyRL-Industrial: Edge Nodes TinyRL Semantic-Context Link on Agentic Workflow
 
-Keywords: Industry 5.0, Frugal AI, Edge Node, TinyRL, Streaming RL, Predictive Maintenance, Covariate Shift, Semantic Data, Industrial Context, UNS, MQTT, PlatformIO
+Keywords: Industry 5.0, Frugal AI, Edge Node, TinyML, TinyRL, Streaming RL, Predictive Maintenance, Covariate Shift, Semantic Data, Industrial Context, Active Learning, Semantic Communication, UNS, MQTT, PlatformIO
 
 The product provides a **general core** wired to the **TinyRL library**, with standardised UNS schema + AI-agent `skills.md`. 
 
@@ -11,6 +11,7 @@ The product provides a **general core** wired to the **TinyRL library**, with st
 | [README.md](README.md) | (You are here) Guide on how to utilise the library: setup, build, flash, run |
 | [RESEARCH.md](RESEARCH.md) | Research questions, progress tracking, experiment log, design rationale |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Deep dive: block diagrams, memory/compute/flash layouts, runtime internals, ESP32-S3 utilization |
+| [literature/](literature/README.md) | Per-paper snapshots (key concepts, methods, ~300-word summary, schema implications) + reading index |
 
 ## Quick start
 
@@ -180,6 +181,7 @@ Point your agent runtime at the broker with the skills sheet + the two files in
 
 ## References
 
+- Stream-X (streaming deep RL — TinyRL's algorithm lineage): <https://arxiv.org/abs/2410.14606>
 - Repository: <https://github.com/mohmdelsayed/TinyRL> (analyzed at commit `82f0774`)
 - Documentation: <https://www.tinyrl.ai/docs/> — ESP32 guide: <https://www.tinyrl.ai/docs/esp32/>
 - Board: YD ESP32-S3 WROOM N16R8 — <https://www.espboards.dev/esp32/yd-esp32-s3/>
