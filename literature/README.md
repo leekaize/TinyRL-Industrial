@@ -14,7 +14,7 @@ Conventions:
 
 | File | Work | Pillar | Source | Status |
 |------|------|:------:|--------|:------:|
-| `elsayed-2024-stream-x.md` | Streaming Deep RL Finally Works (Stream-X) | 1 | arXiv:2410.14606 | ⬜ |
+| `elsayed-2024-stream-x.md` | Streaming Deep RL Finally Works (Stream-X) | 1 | arXiv:2410.14606 | ✅ |
 | `kearney-2019-idbd-td.md` | Learning Feature Relevance Through Step Size Adaptation in TD Learning | 1 | arXiv:1903.03252 | ⬜ |
 | `degris-2024-step-size-cl.md` | Step-size Optimization for Continual Learning | 1 | arXiv:2401.17401 | ⬜ |
 | `sharifnassab-2026-intentional-updates.md` | Intentional Updates for Streaming RL | 1 | arXiv:2604.19033 | ⬜ |

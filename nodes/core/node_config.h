@@ -28,13 +28,20 @@ constexpr float    SCORE_FLOOR    = 1e-4f;
 constexpr int      ALARM_HI_N     = 5;      // consecutive breaches -> alarm
 constexpr int      CLEAR_LO_N     = 60;     // consecutive quiet    -> clear
 
-// ---- TinyRL agent (network + ObGD optimizer) ----
+// ---- TinyRL agent (network + streaming optimizer) ----
+// Default optimizer: StreamingOptimizer (Stream-X v3, nodes/core/
+// streaming_optimizer.h) -- per-coordinate bound |move| < lr.
+// Ablation fallback: build with -DMONITOR_USE_OBGD for the v2 ObGD rule
+// (global trace-norm scaling; kappa applies).
 constexpr int      NET_HIDDEN     = 32;     // hidden width (2-layer MLP)
-constexpr float    NET_SPARSITY   = 0.9f;   // 90% sparse init (StreamX recipe)
-constexpr float    OBGD_LR        = 0.5f;
-constexpr float    OBGD_GAMMA     = 0.9f;   // trace decay
-constexpr float    OBGD_LAMBDA    = 0.8f;   // trace backview
-constexpr float    OBGD_KAPPA     = 2.0f;   // overshooting bound gain
+constexpr float    NET_SPARSITY   = 0.95f;  // global sparse-init budget (StreamX v3); per-layer density is budget-allocated with a connectivity floor
+constexpr float    MONITOR_LR     = 2e-3f;  // step size (paper-scale, Stream-X prescribed range)
+constexpr float    OBGD_GAMMA     = 0.9f;   // trace decay (both optimizers)
+constexpr float    OBGD_LAMBDA    = 0.8f;   // trace backview (both optimizers)
+constexpr float    STREAM_BETA    = 0.99995f; // leaky-max retention (paper-prescribed)
+constexpr float    STREAM_EPS     = 1.0f;   // unit-signal floor (z-scored signals)
+constexpr float    OBGD_LR        = 0.5f;   // (ObGD ablation path only)
+constexpr float    OBGD_KAPPA     = 2.0f;   // (ObGD ablation path only) overshooting bound gain
 constexpr uint32_t SEED           = 20260101u; // 0 = seed from TRNG at boot
 
 // ---- condition library ----

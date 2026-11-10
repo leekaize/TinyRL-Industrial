@@ -5,19 +5,73 @@
 #include <math.h>
 #include <string.h>
 #include <memory>
+#include <vector>
+#include <utility>
 #include "tinyrl_monitor.h"
+
+// Layer-aware sparse-init densities (Stream-X v3 App. C, adapted). The
+// global nonzero budget (1 - NET_SPARSITY) * total_weights is distributed
+// over layers proportional to (fan_in + fan_out), capped at dense, with a
+// connectivity FLOOR of >= 1 nonzero input per unit. The floor is the
+// adaptation: the paper's budget alone still allows all-zero low-fan-in
+// layers, and our first layer (fan_in = nf_) is exactly that case under
+// the v2 uniform rule.
+static std::vector<float> layerDensities(
+    const std::vector<std::pair<int, int>>& shapes, float target_sparsity) {
+  const size_t n = shapes.size();
+  std::vector<long> cap(n), floornz(n), phi(n);
+  size_t total = 0;
+  long phisum = 0;
+  for (size_t i = 0; i < n; ++i) {
+    cap[i]    = (long)shapes[i].first * shapes[i].second;
+    floornz[i] = shapes[i].second;               // 1 nonzero input per unit
+    phi[i]    = shapes[i].first + shapes[i].second;
+    total    += (size_t)cap[i];
+    phisum   += phi[i];
+  }
+  long budget = lroundf((1.0f - target_sparsity) * (float)total);
+  std::vector<long> nz(n);
+  long used = 0;
+  for (size_t i = 0; i < n; ++i) { nz[i] = floornz[i]; used += nz[i]; }
+  while (used < budget) {                        // leftover: proportional, capped
+    long given = 0;
+    for (size_t i = 0; i < n && used < budget; ++i) {
+      if (nz[i] >= cap[i]) continue;
+      long share = (budget - used) * phi[i] / phisum;
+      if (share < 1) share = 1;
+      if (share > cap[i] - nz[i]) share = cap[i] - nz[i];
+      nz[i] += share; used += share; given += share;
+    }
+    if (given == 0) break;
+  }
+  std::vector<float> density(n);
+  for (size_t i = 0; i < n; ++i)
+    density[i] = (float)nz[i] / (float)cap[i];
+  return density;
+}
 
 void TinyRLConditionMonitor::buildNet() {
   if (cfg::SEED != 0) ag::manual_seed(cfg::SEED);   // deterministic init
+  const std::vector<std::pair<int, int>> shapes = {
+      {nf_, cfg::NET_HIDDEN}, {cfg::NET_HIDDEN, cfg::NET_HIDDEN}, {cfg::NET_HIDDEN, nf_}};
+  const std::vector<float> dens = layerDensities(shapes, cfg::NET_SPARSITY);
   net_.clear();
-  net_.add(nn::Linear(nf_, cfg::NET_HIDDEN, cfg::NET_SPARSITY));
-  net_.add(nn::LayerNorm());
-  net_.add(nn::LeakyReLU());
-  net_.add(nn::Linear(cfg::NET_HIDDEN, cfg::NET_HIDDEN, cfg::NET_SPARSITY));
-  net_.add(nn::LayerNorm());
-  net_.add(nn::LeakyReLU());
-  net_.add(nn::Linear(cfg::NET_HIDDEN, nf_));
+  for (size_t i = 0; i < shapes.size(); ++i) {
+    float sp = 1.0f - dens[i];
+    const float smax = (shapes[i].first - 1.0f) / (float)shapes[i].first;
+    if (sp > smax) sp = smax;                   // rounding guard for the floor
+    net_.add(nn::Linear(shapes[i].first, shapes[i].second, sp));
+    if (i + 1 < shapes.size()) {                // hidden activations only
+      net_.add(nn::LayerNorm());
+      net_.add(nn::LeakyReLU());
+    }
+  }
+#if defined(MONITOR_USE_OBGD)
   opt_ = ObGD(cfg::OBGD_LR, cfg::OBGD_GAMMA, cfg::OBGD_LAMBDA, cfg::OBGD_KAPPA);
+#else
+  opt_ = StreamingOptimizer(cfg::MONITOR_LR, cfg::OBGD_GAMMA, cfg::OBGD_LAMBDA,
+                            cfg::STREAM_BETA, cfg::STREAM_EPS);
+#endif
   opt_.add_parameters(net_.layers());
   n_params_ = 0;
   for (auto& l : net_.layers())
@@ -39,9 +93,9 @@ void TinyRLConditionMonitor::begin(const FeatureProfile& prof) {
   learning_ = theta_ready_ = alarmed_ = false;
   has_prev_ = false;
   memset(last_raw_, 0, sizeof(last_raw_));
-  Serial.printf("[RL] monitor ready: nf=%d hidden=%d params=%u (~%u KB with traces)\n",
+  Serial.printf("[RL] monitor ready: nf=%d hidden=%d params=%u (~%u KB optimizer state)\n",
                 nf_, cfg::NET_HIDDEN, (unsigned)n_params_,
-                (unsigned)((n_params_ * 2 * sizeof(float)) / 1024));
+                (unsigned)((n_params_ * 3 * sizeof(float)) / 1024));
 }
 
 void TinyRLConditionMonitor::startLearning() {
@@ -80,8 +134,8 @@ void TinyRLConditionMonitor::factoryReset() {
 
 void TinyRLConditionMonitor::onWorldChange() {
   // Regime change (e.g. a just-labelled episode): keep the weights but
-  // drop eligibility traces so old gradients don't leak into the new
-  // regime. ObGD with delta=0 changes nothing else.
+  // drop optimizer state (traces + leaky max) so old gradients and old
+  // update scale don't leak into the new regime.
   opt_.step(0.0f, /*reset=*/true);
 }
 
@@ -138,7 +192,7 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
   memcpy(x.data(), raw, nf_ * sizeof(float));
   ag::Matrix xn = theta_ready_ ? frozenNorm(x) : welfordZScore(*obsnorm_, x);
 
-  // 3) one-step prediction + ObGD update (StreamQ update() pattern,
+  // 3) one-step prediction + bounded update (StreamQ update() pattern,
   //    minus the action: reward = -surprise, maximize it)
   if (has_prev_) {
     ag::Tensor s(prev_xn_, false);

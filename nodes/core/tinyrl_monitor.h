@@ -9,9 +9,14 @@
 //               LeakyReLU -> Linear(H,nf)
 //   task        one-step prediction: net(x_{t-1}) ~= x_t (self-supervised,
 //               no actions -> ObGD used directly, StreamQ-style loop)
-//   optimizer   ObGD with eligibility traces; the overshooting bound
-//               automatically shrinks steps when a large surprise hits,
-//               so bursts (the anomaly itself) cannot destroy the model.
+//   optimizer   StreamingOptimizer (Stream-X v3 App. A): per-coordinate
+//               leaky running max bounds every parameter's move by the
+//               step size, regardless of network size. v2 ObGD stays
+//               available behind -DMONITOR_USE_OBGD for ablation.
+//   sparse init layer-aware budget (v3 App. C): global nonzero budget is
+//               distributed over layers with a connectivity floor of one
+//               nonzero input per unit -- the v2 uniform rule zeroed ALL
+//               first-layer weights at fan_in=4 / 90% (node boots deaf).
 //   obs stats   SampleMeanStd (data_normalizer.h) = the Welford engine
 //               behind NormalizeObservation; used directly because its
 //               stats must be frozen at theta-fit end (stationary score
@@ -35,7 +40,13 @@
 #include <autograd.h>
 #include <module.h>
 #include <layers.h>
-#include "obgd.h"
+#if defined(MONITOR_USE_OBGD)
+#include "obgd.h"                    // ablation path (v2 algorithm)
+using MonitorOpt = ObGD;
+#else
+#include "streaming_optimizer.h"     // default (v3 StreamingOptimizer)
+using MonitorOpt = StreamingOptimizer;
+#endif
 #include "data_normalizer.h"
 #include "feature_space.h"
 #include "sensor_interface.h"
@@ -100,7 +111,7 @@ private:
 
   // TinyRL stack
   nn::Sequential        net_;
-  ObGD                  opt_{cfg::OBGD_LR, cfg::OBGD_GAMMA, cfg::OBGD_LAMBDA, cfg::OBGD_KAPPA};
+  MonitorOpt            opt_{};
   std::unique_ptr<SampleMeanStd> obsnorm_;  // Welford stats while fitting
   ag::Matrix            prev_xn_;             // last z-scored observation
   bool                  has_prev_ = false;
