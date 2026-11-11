@@ -19,9 +19,11 @@ Conventions:
 | `degris-2024-step-size-cl.md` | Step-size Optimization for Continual Learning | 1 | arXiv:2401.17401 | ⬜ |
 | `sharifnassab-2026-intentional-updates.md` | Intentional Updates for Streaming RL | 1 | arXiv:2604.19033 | ⬜ |
 | `ren-2021-tinyol.md` | TinyOL: TinyML with Online-Learning on Microcontrollers | 1 | arXiv:2103.08295 | ⬜ |
+| `dohare-2024-loss-plasticity.md` | Loss of Plasticity in Deep Continual Learning | 1 | arXiv:2310.02204 · Nature 632 | ⬜ |
 | `deasis-2026-differential-td.md` | Extending Differential TD Methods for Episodic Problems | 1 | arXiv:2605.04368 | ⬜ |
+| `eschmann-2024-rltools.md` | RLtools — buffer-based on-device RL (contrast row; repo = candidate bench baseline) | 1 | arXiv:2306.03530 | ⬜ |
 | `carvalho-2019-pdm-ml-review.md` | SLR of ML methods applied to predictive maintenance | 2 | DOI 10.1016/j.cie.2019.106024 | ⬜ |
-| `mueller-2025-ts-ad-industry.md` | Open Challenges in TS Anomaly Detection: An Industry Perspective | 2 | arXiv:2502.05392 | ⬜ |
+| `mueller-2025-ts-ad-industry.md` | Open Challenges in TS Anomaly Detection: An Industry Perspective | 2 | arXiv:2502.05392 | ✅ |
 | `lee-2020-rere.md` | ReRe: Lightweight Real-time Anomaly Detection for Time Series | 2 | arXiv:2004.02319 | ⬜ |
 | `andriotis-2021-drl-maintenance.md` | Deep RL driven inspection and maintenance planning | 2 | DOI 10.1016/j.ress.2021.107551 | ⬜ |
 | `zhou-2022-goal-oriented-semcom.md` | Goal-Oriented Semantic Communications for 6G Networks | 3 | arXiv:2210.09372 | ⬜ |

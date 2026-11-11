@@ -64,6 +64,7 @@ machine learning; LLM agents; Industry 5.0.
 **Remaining work:**
 
 - [ ] Define + run node-only (no agent) and agent-only (raw telemetry upstream) baselines
+- [ ] Audit host-test/bench for streaming-evaluation purity: score each step with data < t only, no retrospective θ/normalizer fit (Mueller §3.1)
 - [ ] Measure bytes/min up+down per architecture from MQTT payload logs
 - [ ] Table: RAM / flash / CPU / bandwidth / messages per architecture
 - [ ] Confirm the 400× message ratio with measured numbers
@@ -95,12 +96,14 @@ machine learning; LLM agents; Industry 5.0.
 | Work | Source | Informs |
 |------|--------|---------|
 | Elsayed et al., Streaming Deep RL Finally Works (Stream-X) | arXiv:2410.14606 | what must adapt for streaming learning: running-moment normalisation, representation stabilisation, bounded updates (v3 StreamingOptimizer); ESP32-S3 demo |
-| Ren et al., TinyOL | arXiv:2103.08295 | on-node MCU training feasible; baseline for what adapts vs stays static |
+| Ren et al., TinyOL | arXiv:2103.08295 | on-node MCU training feasible; rehearsal storage of previous-class data vs forgetting — backs our flash condition library |
+| Dohare et al., Loss of Plasticity in Deep Continual Learning | arXiv:2310.02204 · Nature 632, 768–774 | catastrophic forgetting / plasticity canon; continual backprop; retention-vs-relearning framing for our flash condition library |
 | Kearney et al., IDBD-lineage step sizes in TD learning | arXiv:1903.03252 | per-feature step sizes as the adaptable parameter; the step size *is* feature relevance |
 | Degris et al., Step-size Optimization for Continual Learning | arXiv:2401.17401 | meta-gradient vs Adam/RMSProp heuristics — which adaptivity mechanism to expose |
 | Sharifnassab et al., Intentional Updates for Streaming RL | arXiv:2604.19033 | step size in output units — parameterising the adaptivity knob |
 | Lee et al., ReRe | arXiv:2004.02319 (COMPSAC 2020) | self-adaptive thresholds in lightweight streaming TS anomaly detection — the θ analogue |
 | De Asis et al., Differential TD for Episodic Problems | arXiv:2605.04368 | reward centering — reward-scale adaptivity |
+| Eschmann et al., RLtools | arXiv:2306.03530 · JMLR 25(301) · github.com/rl-tools/rl-tools | contrast: buffer-based SAC on MCUs (low-dim states, continuous control) — sharpens our no-storage claim (RQ2); its repo is the candidate baseline implementation for the small-buffer synthetic bench |
 
 ### What flows up (semantics) vs down (context) — to be settled by review
 
@@ -141,6 +144,7 @@ machine learning; LLM agents; Industry 5.0.
 | Layer-aware sparse init (global 95% budget + connectivity floor) | v3 App. C: uniform 90% zeroed ALL first-layer weights at fan-in 4 — node booted deaf; floor guarantees ≥1 nonzero input per unit | uniform 90% per-layer |
 | Schema exposes only site-dependent knobs (θ, labels, phase); streaming self-adaptation stays node-local | Stream-X holds one fixed config across tasks — internal adaptation thins what the contract carries; site-relative values are what only external context supplies | expose all RL parameters; fully static node |
 | Stream-TD (prediction branch), not Stream-Q/AC | condition monitoring has no actions to take; detection needs only prediction error; control variants stay in the submodule for future actuation | Stream-Q / Stream-AC on the monitor node |
+| Bench protocol = streaming evaluation (R_o) only | Mueller §3.1: batch benchmarks mislead practitioners; every RQ2/RQ3 baseline scores each step with data < t, no retrospective θ/normalizer fit | batch evaluation as in TAD benchmark suites |
 
 ## Deliverables
 

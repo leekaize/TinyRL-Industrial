@@ -1,1 +1,5 @@
 .pio
+
+# personal: not part of the public repo
+.anki
+.workbook
