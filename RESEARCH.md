@@ -97,7 +97,7 @@ machine learning; LLM agents; Industry 5.0.
 |------|--------|---------|
 | Elsayed et al., Streaming Deep RL Finally Works (Stream-X) | arXiv:2410.14606 | what must adapt for streaming learning: running-moment normalisation, representation stabilisation, bounded updates (v3 StreamingOptimizer); ESP32-S3 demo |
 | Ren et al., TinyOL | arXiv:2103.08295 | on-node MCU training feasible; rehearsal storage of previous-class data vs forgetting — backs our flash condition library |
-| Dohare et al., Loss of Plasticity in Deep Continual Learning | arXiv:2310.02204 · Nature 632, 768–774 | catastrophic forgetting / plasticity canon; continual backprop; retention-vs-relearning framing for our flash condition library |
+| Dohare et al., Loss of Plasticity in Deep Continual Learning | arXiv:2306.13812 · Nature 632, 768–774 (ID corrected 2026-11-12; was 2310.02204, an unrelated paper) | catastrophic forgetting / plasticity canon; continual backprop; retention-vs-relearning framing for our flash condition library |
 | Kearney et al., IDBD-lineage step sizes in TD learning | arXiv:1903.03252 | per-feature step sizes as the adaptable parameter; the step size *is* feature relevance |
 | Degris et al., Step-size Optimization for Continual Learning | arXiv:2401.17401 | meta-gradient vs Adam/RMSProp heuristics — which adaptivity mechanism to expose |
 | Sharifnassab et al., Intentional Updates for Streaming RL | arXiv:2604.19033 | step size in output units — parameterising the adaptivity knob |
@@ -145,6 +145,10 @@ machine learning; LLM agents; Industry 5.0.
 | Schema exposes only site-dependent knobs (θ, labels, phase); streaming self-adaptation stays node-local | Stream-X holds one fixed config across tasks — internal adaptation thins what the contract carries; site-relative values are what only external context supplies | expose all RL parameters; fully static node |
 | Stream-TD (prediction branch), not Stream-Q/AC | condition monitoring has no actions to take; detection needs only prediction error; control variants stay in the submodule for future actuation | Stream-Q / Stream-AC on the monitor node |
 | Bench protocol = streaming evaluation (R_o) only | Mueller §3.1: batch benchmarks mislead practitioners; every RQ2/RQ3 baseline scores each step with data < t, no retrospective θ/normalizer fit | batch evaluation as in TAD benchmark suites |
+| Uplink carries state changes + episode summaries only; never periodic telemetry | Zhou 2022 uplink principle (VoI): transmit task-relevant info, collapse repeats; grep-verified: no periodic telemetry in `nodes/`, raw values only inside episode summaries (`uns_messaging.h`) | periodic MQTT telemetry stream; raw waveform upload |
+| Asks = alarm-gated stream-based selective sampling (`condition_id:"unknown"` inside an episode), not pool-based or agent-initiated | Settles 2012 ch. 1-2: scenario taxonomy; oracle cost argues for rare, event-driven queries; Mueller 2025 one-sided feedback already makes alarm-gating the natural trigger | pool-based batch label requests; agent pushing unsolicited labels |
+| Retention split from relearning: labels/centroids in `/conditions.jsonl`, weights in `/net.bin`, stats+θ in `/model.bin` | Dohare 2024 (Nature 632): retention must not depend on net plasticity; frozen 0..1 centroid space + exact post-boot resume keeps labels alive without replay or relearning; bounded updates keep relearning from eroding capacity | replay buffer for old conditions; relearn-from-scratch on reboot |
+| Quiet-unmatched conditions are counted node-side, never asked about; alarm-gating stands | Settles 2012 ch. 2.5 myopia: a threshold gate can be confidently blind to whole regions (two-triangles failure); counting quiet-unmatched steps is the cheap tripwire, while quiet asks would flood the one-sided oracle | gated + quiet asks by default; ignoring quiet drift entirely |
 
 ## Deliverables
 
