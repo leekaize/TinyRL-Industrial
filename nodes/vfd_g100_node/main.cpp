@@ -9,7 +9,8 @@
 //     model ready -> straight back to monitoring (no relearning)
 //     fresh/IDLE  -> waits for YOUR input:
 //        console 's'   or   MQTT Action/feedback {"action":"start"}
-//   learning: ~5 min CAL then ~2 min theta fit. Machine at NORMAL load!
+//   learning: ~30 s CAL then ~30 s theta fit (1 min total). Machine at
+//   NORMAL load!
 //   monitoring: an alarm opens an episode. Known condition -> labelled
 //   at once (nearest centroid). Unknown -> State/event "open" with
 //   condition_id "unknown" is the implicit ASK. Answer it with console

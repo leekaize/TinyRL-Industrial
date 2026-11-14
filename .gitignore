@@ -1,5 +1,8 @@
 .pio
 
+# web bench exports (research data; force-add a paper run if wanted)
+tests/host-test/webbench/runs/
+
 # personal: not part of the public repo
 .anki
 .workbook
