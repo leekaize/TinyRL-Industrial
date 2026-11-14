@@ -1,5 +1,5 @@
 // Link check: pulls in main.cpp's setup()/loop() once + exercises the
-// console command paths (s / m / l / f) end-to-end.
+// console command paths (s / m / l / f / reset) end-to-end.
 #include <Arduino.h>
 extern void setup();
 extern void loop();
@@ -23,6 +23,9 @@ int main() {
   ticks(2);
   printf("--- console: ? (usage) ---\n");
   Serial.feed("?\n");
+  ticks(2);
+  printf("--- console: reset (factory reset, typed in full) ---\n");
+  Serial.feed("reset\n");
   ticks(2);
   printf("=== LINK + SETUP/LOOP + CONSOLE OK ===\n");
   return 0;

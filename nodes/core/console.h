@@ -4,8 +4,9 @@
 //   r = poll sensor once, verbose
 //   l = list condition library
 //   f <label> [normal|fault]  = answer the open episode
-//   L = FACTORY RESET (model + net + library)
 //   m = model / runtime status
+//   reset = FACTORY RESET (model + net + library), typed in full:
+//           wipes are too destructive for a single stray keypress
 // =====================================================================
 #pragma once
 #include <stdint.h>

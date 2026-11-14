@@ -10,11 +10,12 @@
 void Console::execCmd(char* s) {
   char label[32] = "", act[16] = "";
   if (s[0] == 0) return;
+  // word match must come first: "reset" starts with 'r' = poll now
+  if (strcmp(s, "reset") == 0) { app_->factoryReset(); return; }
   if (s[0] == 's') { app_->startLearning(); return; }
   if (s[0] == 'r') { app_->sensorPollNow(); return; }
   if (s[0] == 'l') { app_->listLibrary(); return; }
   if (s[0] == 'm') { app_->printStatus(); return; }
-  if (s[0] == 'L') { app_->factoryReset(); return; }
   if (s[0] == 'f' && sscanf(s, "f %31s %15s", label, act) >= 1) {
     if (act[0] == 0) snprintf(act, sizeof(act), "label");
     char j[160];
@@ -25,7 +26,7 @@ void Console::execCmd(char* s) {
     return;
   }
   Serial.println("cmds: s=start learning  r=poll now  l=library  "
-                 "f <label> [normal|fault]  L=factory reset  m=status");
+                 "f <label> [normal|fault]  m=status  reset=factory reset");
 }
 
 void Console::tick() {
