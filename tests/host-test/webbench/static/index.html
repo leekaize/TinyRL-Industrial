@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Interactive monitor bench</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="app.js" defer></script>
+</head><body>
+<div id="errbar" class="hidden"></div>
+<h1>Interactive monitor bench - <span id="hdr"></span></h1>
+<div class="controls">
+ <button id="b_play">pause</button>
+ <button id="b_step" class="grey">+25 steps</button>
+ <select id="speed"><option value="1">1x</option><option value="3">3x</option>
+ <option value="10">10x</option></select>
+ <button id="b_export" class="grey">export run</button>
+ <span id="status"></span>
+</div>
+<div class="machine">
+ <div>
+  <b>MOTOR CONDITION</b><br>
+  <span id="m_state" class="m-normal">normal</span>
+ </div>
+ <div class="inject">
+  <span>inject fault:</span>
+  <button onclick="inject('SPEED')">speed trim (op 2)</button>
+  <button onclick="inject('IMBALANCE')">imbalance</button>
+  <button onclick="inject('BEARING')">bearing defect</button>
+  <button onclick="inject('HEAVY')">heavy fault</button>
+  <button class="ok" onclick="inject('NONE')">back to normal</button>
+ </div>
+</div>
+<div id="ask" class="hidden"></div>
+<div class="cards" id="cards"></div>
+<div id="charts"></div>
+<h2>events</h2><div id="events"></div>
+</body></html>

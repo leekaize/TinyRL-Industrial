@@ -18,8 +18,15 @@ constexpr uint32_t PRINT_PERIOD_MS = 2000;   // telemetry console line
 constexpr uint32_t FRESH_WINDOW_MS = 5000;   // data older than this = stale
 
 // ---- learning schedule (units = FEED_PERIOD steps) ----
-constexpr uint32_t CAL_STEPS       = 300;    // ~5 min: sensor range learning
-constexpr uint32_t FIT_STEPS       = 120;    // ~2 min: score stats -> theta
+// 1-minute total LEARN (user decision 2026-11-13), justified by the
+// motor-faithful fixture (test_host.cpp): a fixed-load induction motor
+// is noise-stationary at 1 Hz with slow thermal drift only, so 30
+// samples characterise the noise band. If the node ever watches a load
+// with its own multi-minute cycle, LEARN must span one full cycle
+// (probes 2026-11-13: on the old 4-min-sine fixture, 60- and 120-step
+// LEARNs false-alarmed; 240 steps passed).
+constexpr uint32_t CAL_STEPS       = 30;     // ~30 s: sensor range learning
+constexpr uint32_t FIT_STEPS       = 30;     // ~30 s: score stats -> theta
 
 // ---- score = EMA of TinyRL one-step prediction error ----
 constexpr float    SCORE_EMA      = 0.15f;
@@ -47,6 +54,8 @@ constexpr uint32_t SEED           = 20260101u; // 0 = seed from TRNG at boot
 // ---- condition library ----
 constexpr int      LIB_MAX        = 12;     // learned conditions per node
 constexpr float    LIB_MATCH_D    = 0.30f;  // nearest-centroid threshold (mean dist)
+// Settles 2012 ch. 2.5 myopia tripwire: log line every N quiet-unmatched steps
+constexpr uint32_t QUM_REPORT_EVERY = 1000;
 
 // ---- persistence ----
 constexpr uint32_t AUTOSAVE_MS    = 300000; // flash wear: <=12 writes/hour

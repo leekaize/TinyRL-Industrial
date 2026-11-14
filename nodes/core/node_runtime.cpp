@@ -29,6 +29,33 @@ const char* SensorNodeApp::conditionId() const {
   return ep_.isOpen() ? ep_.cond() : "unknown";
 }
 
+float SensorNodeApp::score() const { return mon_.score(); }
+float SensorNodeApp::theta() const { return mon_.theta(); }
+
+const char* SensorNodeApp::phase() const {
+  if (!mon_.learning() && !mon_.thetaReady()) return "idle";
+  if (!mon_.thetaReady()) return mon_.space().armed() ? "fit" : "cal";
+  return mon_.alarmed() ? "alarm" : "mon";
+}
+
+bool SensorNodeApp::episodeOpen() const { return ep_.isOpen(); }
+uint32_t SensorNodeApp::stepCount() const { return mon_.steps(); }
+uint32_t SensorNodeApp::libSize() const { return lib_.size(); }
+
+void SensorNodeApp::episodeMeans(float* out) const { ep_.means(out); }
+
+int SensorNodeApp::shareLabel(const char* slug, const float* mean_raw) {
+  return lib_.label(slug, mean_raw, mon_.space(), "shared");
+}
+
+int SensorNodeApp::libMatch(const float* raw) const {
+  return lib_.match(raw, mon_.space());
+}
+
+const char* SensorNodeApp::libName(int idx) const {
+  return (idx >= 0 && idx < lib_.size()) ? lib_.at(idx).id : "";
+}
+
 void SensorNodeApp::publishCondition(bool retained) {
   uint32_t now = millis();
   msg_.publishCondition(mon_.stateString(), conditionId(),
@@ -53,6 +80,7 @@ void SensorNodeApp::begin(ISensorNode& sensor, const NodeIdentity& id) {
   dev_id_ = id.dev_id;
   last_cond_key_[0] = 0;
   last_model_save_ = millis();
+  quiet_unmatched_ = 0;
 
   sensor.begin();
 
@@ -168,10 +196,12 @@ void SensorNodeApp::printStatus() {
   sensor_->logLine(line, sizeof(line));
   Serial.printf("[NODE] %s | state=%s cond=%s conf=%.2f\n",
                 line, mon_.stateString(), conditionId(), mon_.confidence());
-  Serial.printf("[RL] step=%lu score=%.3f theta=%.3f params=%u lib=%d pubs=%lu heap=%u\n",
+  Serial.printf("[RL] step=%lu score=%.3f theta=%.3f params=%u lib=%d pubs=%lu "
+                "qum=%lu heap=%u\n",
                 (unsigned long)mon_.steps(), mon_.score(), mon_.theta(),
                 (unsigned)mon_.paramCount(), lib_.size(),
-                (unsigned long)msg_.publishes(), (unsigned)ESP.getFreeHeap());
+                (unsigned long)msg_.publishes(), (unsigned long)quiet_unmatched_,
+                (unsigned)ESP.getFreeHeap());
 }
 
 void SensorNodeApp::factoryReset() {
@@ -179,6 +209,7 @@ void SensorNodeApp::factoryReset() {
   lib_.clear();
   persist::factoryReset();
   last_cond_key_[0] = 0;
+  quiet_unmatched_ = 0;
   Serial.println("[FS] back to IDLE - press 's' to start learning again");
 }
 
@@ -226,6 +257,20 @@ void SensorNodeApp::tick() {
         saveAll();
       } else if (mon_.alarmed() && ep_.isOpen()) {
         ep_.feed(last_raw_);
+      } else if (mon_.thetaReady() && !mon_.alarmed() && !out.alarm_clear &&
+                 lib_.size() > 0) {
+        // Settles 2012 ch. 2.5 myopia tripwire (RESEARCH.md design decisions):
+        // a quiet step whose profile matches no centroid within radius r
+        // (LIB_MATCH_D, frozen 0..1 condition space) may be a confidently-blind
+        // region. Counted and logged locally only: never published, never asked
+        // about. Volatile by design (tripwire reads recent history).
+        if (lib_.match(last_raw_, mon_.space()) < 0) {
+          ++quiet_unmatched_;
+          if (quiet_unmatched_ % cfg::QUM_REPORT_EVERY == 0)
+            Serial.printf("[LIB] quiet-unmatched=%lu steps (no centroid within "
+                          "r=%.2f) - possible blind region\n",
+                          (unsigned long)quiet_unmatched_, cfg::LIB_MATCH_D);
+        }
       }
     }
   }
