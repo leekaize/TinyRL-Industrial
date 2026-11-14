@@ -1,5 +1,8 @@
 .pio
 
+# python bytecode (webbench server)
+__pycache__/
+
 # web bench exports (research data; force-add a paper run if wanted)
 tests/host-test/webbench/runs/
 

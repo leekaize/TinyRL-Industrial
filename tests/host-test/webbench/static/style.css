@@ -31,3 +31,5 @@ input, select { padding: 5px; border-radius: 4px; border: 1px solid #c3ccd6;
           background: white; border: 1px solid #d7dde5; padding: 8px;
           border-radius: 6px; max-height: 180px; overflow-y: auto; }
 .ev-line { color: #b4540a; }
+
+.chartnote { font-size: 11px; color: #64748b; margin: 2px 0 10px; }

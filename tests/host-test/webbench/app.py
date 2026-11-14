@@ -26,8 +26,11 @@ Run:
 API (used by the page, also curl-able):
     GET  /state                full snapshot (series + asks + verdicts)
     GET  /debug                counters for stall diagnosis
-    POST /label                {"node", "slug", "action": label|normal|fault}
-    POST /control              {"cmd": play|step|continue|speed, ...}
+    POST /label                {"node", "slug", "action": label|normal|fault,
+                                "kind": normal|fault (label only)}
+    POST /control              {"cmd": run|continue, "seconds": n}
+    POST /machine              {"ev": START|STOP|SPEED1..3|IMBALANCE|
+                                     LOOSE_MOUNT|PHASE_LOSS|NORMAL}
     POST /export               writes runs/run-<ts>.jsonl, returns the path
 """
 import argparse
@@ -53,7 +56,7 @@ RUNS = WEBBENCH / "runs"
 BIN = Path("/tmp/tinyrl_interactive")
 
 FEATURES = {
-    "vfd_g100": [("i", "A"), ("slip", "Hz"), ("vdc", "V"), ("tq", "%")],
+    "vfd_g100": [("i", "A"), ("fset", "Hz"), ("vdc", "V"), ("tq", "%")],
     "vib_adxl": [("rms", "g"), ("b1", "g2"), ("b2", "g2"), ("b3", "g2"),
                  ("b4", "g2"), ("fmax", "Hz")],
 }
@@ -85,19 +88,26 @@ class Bench:
     def __init__(self, profile, steps: int, nodes: int, autoagent: bool):
         self.steps_total = steps
         self.n_nodes = nodes
-        self.playing = True
-        self.speed = 1
+        # no autoplay: sim time only moves when the user queues it (+5 s / +60 s)
+        self.pace_left = 0            # sim seconds queued, not yet advanced
+        self.pace_rate = 10.0         # sim seconds per wall second: visible
+                                      # motion, faster than real time
+        self._pace_carry = 0.0
+        self._last_tick = time.time()
         self.sent = 0
         self.consumed = 0
         self.ask_serial = 0
         self.dismissed = -1
+        self.verdict_count = 0
         self.done = False
         self.lock = threading.Lock()
         self.events = []
         self.rows = [[] for _ in range(nodes)]
         self.ask_serials = [-1] * nodes
         self.verdicts = [None] * nodes
-        self.machine = "normal"
+        self.machine = "op_stopped"           # boot truth before META/M
+        self.context = "op_stopped"           # setpoint the machine runs at
+        self.marks = []                       # every machine event (step, name)
         self.node_types = None                # filled from META
         env = dict(os.environ, TINYRL_STEPS=str(steps), TINYRL_NODES=str(nodes))
         if profile:
@@ -152,6 +162,7 @@ class Bench:
                         self.ask_serial += 1
                         self.ask_serials[node] = self.ask_serial
                 elif kind == "VERDICT":
+                    self.verdict_count += 1
                     v = dict(payload)
                     v["step"] = max((r["step"] for r in self.rows[node]),
                                     default=0)
@@ -163,7 +174,12 @@ class Bench:
                     self.node_types = [x.split("=", 1)[1] for x in t
                                        if re.match(r"node\d+=", x)]
                 elif kind == "MACHINE":
-                    self.machine = payload
+                    parts = payload.split()
+                    self.machine = parts[0]
+                    self.context = parts[1] if len(parts) > 1 else parts[0]
+                    step = max((r["step"] for rows in self.rows
+                                for r in rows), default=0)
+                    self.marks.append([step, self.machine])
                 elif kind == "EV":
                     step = max((r["step"] for rows in self.rows for r in rows),
                                default=0)
@@ -185,18 +201,33 @@ class Bench:
         with self.lock:
             if self.done:
                 return
+            now = time.time()
+            dt = min(0.5, now - self._last_tick)
+            self._last_tick = now
             ask_nodes = [i for i, rows in enumerate(self.rows)
                          if rows and rows[-1]["ep"] == 1
                          and rows[-1]["cond"] == "unknown"]
             holding = bool(ask_nodes) and self.ask_serial != self.dismissed
-            if self.playing and not holding:
-                for _ in range(self.speed):
-                    self.advance()
+            if holding:          # an ask freezes sim time; drop missed time
+                self._pace_carry = 0.0
+                return
+            if self.pace_left <= 0:
+                return
+            due = self.pace_rate * dt + self._pace_carry
+            n = int(due)
+            self._pace_carry = due - n
+            if n > self.pace_left:
+                n = self.pace_left
+                self._pace_carry = 0.0
+            for _ in range(n):
+                self.advance()
+            self.pace_left -= n
 
-    def label(self, node: int, slug: str, action: str) -> None:
+    def label(self, node: int, slug: str, action: str,
+              kind: str = "fault") -> None:
         if action == "label":
-            j = json.dumps({"action": "label", "label": slug, "by": "user"},
-                           separators=(",", ":"))
+            j = json.dumps({"action": "label", "label": slug, "kind": kind,
+                            "by": "user"}, separators=(",", ":"))
         elif action == "fault":
             j = json.dumps({"action": "fault", "by": "user"},
                            separators=(",", ":"))
@@ -265,7 +296,10 @@ class Bench:
             return {
                 "steps_total": self.steps_total,
                 "machine": self.machine,
-                "playing": self.playing, "done": self.done,
+                "context": self.context,
+                "marks": self.marks,
+                "playing": self.pace_left > 0,
+                "done": self.done,
                 "ask": ask,
                 "holding": bool(ask) and self.ask_serial != self.dismissed,
                 "nodes": nodes,
@@ -299,7 +333,7 @@ class Handler(SimpleHTTPRequestHandler):
             b = self.bench
             with b.lock:
                 dbg = {"sent": b.sent, "consumed": b.consumed,
-                       "playing": b.playing, "speed": b.speed,
+                       "pace_left": b.pace_left, "pace_rate": b.pace_rate,
                        "done": b.done, "poll": b.proc.poll(),
                        "ask_serial": b.ask_serial, "dismissed": b.dismissed,
                        "row_lens": [len(r) for r in b.rows],
@@ -316,23 +350,21 @@ class Handler(SimpleHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or "{}")
         if self.path == "/label":
             self.bench.label(int(body["node"]), str(body.get("slug", "")),
-                             str(body.get("action", "label")))
+                             str(body.get("action", "label")),
+                             str(body.get("kind", "fault")))
             self._send(200, "ok", "text/plain")
         elif self.path == "/control":
             cmd = body.get("cmd")
-            if cmd == "play":
-                self.bench.playing = not self.bench.playing
-            elif cmd == "step":
-                for _ in range(25):
-                    self.bench.advance()
-            elif cmd == "speed":
-                self.bench.speed = max(1, min(20, int(body.get("speed", 1))))
+            if cmd == "run":
+                self.bench.pace_left += max(1, min(600,
+                                                   int(body.get("seconds", 5))))
             elif cmd == "continue":
                 self.bench.dismissed = self.bench.ask_serial
             self._send(200, "ok", "text/plain")
         elif self.path == "/machine":
-            ev = str(body.get("ev", "NONE"))
-            if ev in ("NONE", "SPEED", "IMBALANCE", "BEARING", "HEAVY"):
+            ev = str(body.get("ev", ""))
+            if ev in ("START", "STOP", "SPEED1", "SPEED2", "SPEED3",
+                      "IMBALANCE", "LOOSE_MOUNT", "PHASE_LOSS", "NORMAL"):
                 self.bench.send(f"F {ev}")
                 self._send(200, "ok", "text/plain")
             else:
@@ -389,7 +421,7 @@ def main() -> None:
               f"labels={sum(1 for t in ev if '[FB]' in t and chr(39) + 'label' + chr(39) in t)} "
               f"shares={sum(1 for t in ev if '[SHARE]' in t)} "
               f"autos={sum(1 for t in ev if '[AUTO]' in t)} "
-              f"verdicts={sum(1 for t in ev if t.startswith('VERDICT'))}")
+              f"verdicts={bench.verdict_count}")
         for t in [t for _, t in bench.events if t.startswith("DONE")]:
             print("  ", t)
         return

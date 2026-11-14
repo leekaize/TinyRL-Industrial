@@ -25,8 +25,12 @@ static void slugify(const char* in, char* out, size_t len) {
 
 const char* SensorNodeApp::conditionId() const {
   if (!mon_.thetaReady()) return mon_.learning() ? "learning" : "idle";
-  if (!mon_.alarmed()) return "normal";
-  return ep_.isOpen() ? ep_.cond() : "unknown";
+  if (mon_.alarmed()) return ep_.isOpen() ? ep_.cond() : "unknown";
+  // quiet: surface the recognised operating point if the library knows it
+  // (user ask 2026-11-14: "cond=normal should show which speed it is under")
+  int m = lib_.match(last_raw_, mon_.space());
+  if (m >= 0 && lib_.at(m).kind == COND_NORMAL) return lib_.at(m).id;
+  return "normal";
 }
 
 float SensorNodeApp::score() const { return mon_.score(); }
@@ -44,8 +48,9 @@ uint32_t SensorNodeApp::libSize() const { return lib_.size(); }
 
 void SensorNodeApp::episodeMeans(float* out) const { ep_.means(out); }
 
-int SensorNodeApp::shareLabel(const char* slug, const float* mean_raw) {
-  return lib_.label(slug, mean_raw, mon_.space(), "shared");
+int SensorNodeApp::shareLabel(const char* slug, const float* mean_raw,
+                              CondKind kind) {
+  return lib_.label(slug, mean_raw, mon_.space(), "shared", kind);
 }
 
 int SensorNodeApp::libMatch(const float* raw) const {
@@ -100,6 +105,7 @@ void SensorNodeApp::begin(ISensorNode& sensor, const NodeIdentity& id) {
 
   lib_.begin(sensor.profile().n_features);
   lib_.load(cfg::COND_FILE);
+  mon_.attachLibrary(&lib_);   // normal-kind centroids quiet the alarm
 
   const FeatureProfile& prof = sensor.profile();
   ep_.begin(&prof, &lib_, dev_id_,
@@ -135,11 +141,16 @@ void SensorNodeApp::startLearning() {
 
 // ---------------- feedback (Action/feedback + console 'f') -----------
 void SensorNodeApp::applyFeedback(const char* j) {
-  char action[16] = "", label[32] = "", by[20] = "";
+  char action[16] = "", label[32] = "", by[20] = "", kindstr[8] = "";
   jsonStr(j, "action", action, sizeof(action));
   jsonStr(j, "label",  label,  sizeof(label));
   jsonStr(j, "by",     by,     sizeof(by));
-  Serial.printf("[FB] action='%s' label='%s' by='%s'\n", action, label, by);
+  jsonStr(j, "kind",   kindstr, sizeof(kindstr));
+  // kind defaults to FAULT: conservative - only an explicitly named normal
+  // condition ever auto-accepts into the alarm baseline
+  CondKind kind = (strcmp(kindstr, "normal") == 0) ? COND_NORMAL : COND_FAULT;
+  Serial.printf("[FB] action='%s' label='%s' kind='%s' by='%s'\n",
+                action, label, kindstr, by);
 
   if (strcmp(action, "start") == 0) { startLearning(); return; }
 
@@ -149,13 +160,17 @@ void SensorNodeApp::applyFeedback(const char* j) {
     slugify(label, slug, sizeof(slug));
     float mean[cfg::MAX_FEATURES];
     ep_.means(mean);
-    int idx = lib_.label(slug, mean, mon_.space(), by);
+    int idx = lib_.label(slug, mean, mon_.space(), by, kind);
     if (idx < 0) {
       Serial.println("[FB] condition library full (LIB_MAX)");
       return;
     }
-    ep_.relabel(slug, millis());
-    mon_.onWorldChange();                // regime changed -> drop traces
+    ep_.relabel(slug, kind, millis());
+    if (kind == COND_FAULT)
+      mon_.onFeedbackFault();        // confirmed fault -> sharpen (plan.md:
+                                     // normal +10% / fault -5% governance)
+    else
+      mon_.onWorldChange();          // regime changed -> drop traces
     lib_.save(cfg::COND_FILE);
     saveAll();
     publishCondition(true);
@@ -260,16 +275,17 @@ void SensorNodeApp::tick() {
       } else if (mon_.thetaReady() && !mon_.alarmed() && !out.alarm_clear &&
                  lib_.size() > 0) {
         // Settles 2012 ch. 2.5 myopia tripwire (RESEARCH.md design decisions):
-        // a quiet step whose profile matches no centroid within radius r
-        // (LIB_MATCH_D, frozen 0..1 condition space) may be a confidently-blind
-        // region. Counted and logged locally only: never published, never asked
-        // about. Volatile by design (tripwire reads recent history).
+        // a quiet step whose profile matches no centroid within the tripwire
+        // radius (MATCH_Q per-feature units, condition space) may be a
+        // confidently-blind region. Counted and logged locally only: never
+        // published, never asked about. Volatile by design (tripwire reads
+        // recent history).
         if (lib_.match(last_raw_, mon_.space()) < 0) {
           ++quiet_unmatched_;
           if (quiet_unmatched_ % cfg::QUM_REPORT_EVERY == 0)
             Serial.printf("[LIB] quiet-unmatched=%lu steps (no centroid within "
-                          "r=%.2f) - possible blind region\n",
-                          (unsigned long)quiet_unmatched_, cfg::LIB_MATCH_D);
+                          "q=%.1f units) - possible blind region\n",
+                          (unsigned long)quiet_unmatched_, cfg::MATCH_Q);
         }
       }
     }

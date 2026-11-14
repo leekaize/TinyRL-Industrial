@@ -23,23 +23,27 @@ int ConditionLibrary::find(const char* slug) const {
   return -1;
 }
 
-int ConditionLibrary::match(const float* raw, const FeatureSpace& fs) const {
-  int best = -1;
-  float bestd = cfg::LIB_MATCH_D;               // mean-distance threshold
+int ConditionLibrary::match(const float* raw, const FeatureSpace& fs,
+                            float q) const {
+  // MAX-COMPONENT metric in log2-ratio decades with a per-feature radius
+  // (q * unit(f), feature_space.h). The old mean-distance over 0..1 let
+  // one discriminative feature be outvoted by the flat ones, and its
+  // fixed radius could not serve features with different noise scales
+  // (bench findings, 2026-11-14).
   for (int i = 0; i < n_; ++i) {
-    float d2 = 0;
+    bool ok = true;
     for (int f = 0; f < nf_; ++f) {
-      float d = fs.to01(f, raw[f]) - lib_[i].c[f];
-      d2 += d * d;
+      float d = fabsf(fs.rel(f, raw[f]) - lib_[i].c[f]);
+      if (d > q * fs.unit(f)) { ok = false; break; }
     }
-    float d = sqrtf(d2 / (float)nf_);
-    if (d < bestd) { bestd = d; best = i; }
+    if (ok) return i;   // first condition fully inside the radius
   }
-  return best;
+  return -1;
 }
 
 int ConditionLibrary::label(const char* slug, const float* mean_raw,
-                            const FeatureSpace& fs, const char* by) {
+                            const FeatureSpace& fs, const char* by,
+                            CondKind kind) {
   int found = find(slug);
   if (found < 0 && n_ < cfg::LIB_MAX) {
     found = n_++;
@@ -50,14 +54,17 @@ int ConditionLibrary::label(const char* slug, const float* mean_raw,
     c.first_seen = millis();
     c.count = 1;
     c.last_seen = millis();
-    for (int f = 0; f < nf_; ++f) c.c[f] = fs.to01(f, mean_raw[f]);
-    Serial.printf("[LIB] learned new condition '%s'\n", slug);
+    c.kind = kind;
+    for (int f = 0; f < nf_; ++f) c.c[f] = fs.rel(f, mean_raw[f]);
+    Serial.printf("[LIB] learned new condition '%s' (%s)\n", slug,
+                  kind == COND_NORMAL ? "normal" : "fault");
   } else if (found >= 0) {
     Condition& c = lib_[found];
     for (int f = 0; f < nf_; ++f)
-      c.c[f] = 0.8f * c.c[f] + 0.2f * fs.to01(f, mean_raw[f]);
+      c.c[f] = 0.8f * c.c[f] + 0.2f * fs.rel(f, mean_raw[f]);
     c.count++;
     c.last_seen = millis();
+    c.kind = kind;                    // operator may re-classify
     if (by && by[0]) snprintf(c.source, sizeof(c.source), "%s", by);
   }
   return found;
@@ -69,7 +76,7 @@ void ConditionLibrary::refine(const char* id, const float* mean_raw,
   if (i < 0) return;
   Condition& c = lib_[i];
   for (int f = 0; f < nf_; ++f)
-    c.c[f] = 0.9f * c.c[f] + 0.1f * fs.to01(f, mean_raw[f]);
+    c.c[f] = 0.9f * c.c[f] + 0.1f * fs.rel(f, mean_raw[f]);
   c.count++;
   c.last_seen = millis();
 }
@@ -93,9 +100,11 @@ bool ConditionLibrary::save(const char* path) const {
     f.printf("{\"id\":\"%s\",\"c\":[", c.id);
     for (int k = 0; k < nf_; ++k)
       f.printf("%s%.4f", k ? "," : "", c.c[k]);
-    f.printf("],\"count\":%lu,\"first\":%lu,\"last\":%lu,\"src\":\"%s\"}\n",
+    f.printf("],\"count\":%lu,\"first\":%lu,\"last\":%lu,\"src\":\"%s\","
+             "\"kind\":\"%s\"}\n",
              (unsigned long)c.count, (unsigned long)c.first_seen,
-             (unsigned long)c.last_seen, c.source);
+             (unsigned long)c.last_seen, c.source,
+             c.kind == COND_NORMAL ? "normal" : "fault");
   }
   f.close();
   return true;
@@ -113,6 +122,9 @@ bool ConditionLibrary::load(const char* path) {
     memset(&c, 0, sizeof(c));
     jsonStr(line.c_str(), "id", c.id, sizeof(c.id));
     jsonStr(line.c_str(), "src", c.source, sizeof(c.source));
+    char kindstr[8] = "";
+    jsonStr(line.c_str(), "kind", kindstr, sizeof(kindstr));
+    c.kind = (strcmp(kindstr, "normal") == 0) ? COND_NORMAL : COND_FAULT;
     const char* p = strstr(line.c_str(), "\"c\":[");
     if (p) {
       p += 5;

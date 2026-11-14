@@ -49,8 +49,9 @@ public:
   void        episodeMeans(float* out) const;   // raw units, open episode
 
   // multi-node label sharing: another node's episode means (raw) mapped
-  // through THIS node's own frozen feature space
-  int         shareLabel(const char* slug, const float* mean_raw);
+  // through THIS node's own frozen feature space; kind travels with the slug
+  int         shareLabel(const char* slug, const float* mean_raw,
+                         CondKind kind);
   int         libMatch(const float* raw) const;
   const char* libName(int idx) const;
 

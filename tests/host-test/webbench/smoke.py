@@ -3,12 +3,13 @@
 
     python3 tests/host-test/webbench/smoke.py [--steps 900]
 
-Plays the human against the live HTTP server:
-  1. inject IMBALANCE from the machine panel
-  2. when the vibration node asks, label it 'imbalance'
-  3. dismiss any false alarm (normal feedback)
-  4. revert the machine to normal, wait for the episode to clear
-  5. re-inject IMBALANCE -> the node must recognise it LOCALLY
+Plays the human against the live HTTP server (no autoplay anywhere):
+  1. queue +60 s chunks so sim time flows at ~10 s per wall second
+  2. START the motor -> nodes calibrate on the running machine (speed 1)
+  3. once both nodes monitor, inject IMBALANCE from the machine panel
+  4. when the vibration node asks, label it 'imbalance'; dismiss others
+  5. clear the fault, wait for the episode to clear
+  6. re-inject IMBALANCE -> the node must recognise it LOCALLY
      (cond=imbalance, NO new ask) -> PASS
 
 Exits 0 on pass, 1 on fail. Uses only stdlib + the HTTP API.
@@ -83,48 +84,58 @@ def run_loop(c: Client, steps: int):
     t0 = time.time()
     last_dbg = t0
     node_type = {}
-    while time.time() - t0 < 120:
+    while time.time() - t0 < 180:
         st = c.get("/state")
         if time.time() - last_dbg > 10:
             last_dbg = time.time()
             print(f"  [dbg t={int(time.time()-t0)}s machine={st['machine']} "
                   f"steps={[n['step'] for n in st['nodes']]} "
+                  f"phases={[n['phase'] for n in st['nodes']]} "
                   f"conds={[n['cond'] for n in st['nodes']]} "
-                  f"holding={st['holding']} done={st['done']} coaching={not (injected and labeled and reverted and rechecked)}")
-        st = c.get("/state")
+                  f"holding={st['holding']} done={st['done']} "
+                  f"coaching={not (injected and labeled and reverted and rechecked)}")
+
+        # the bench has no autoplay: keep sim time flowing in +60 s chunks
+        if not st["playing"] and not st["holding"] and not st["done"]:
+            c.post("/control", {"cmd": "run", "seconds": 60})
+
         for n in st["nodes"]:
             node_type[n["id"]] = n["node_type"]
         vib = next((i for i, t in node_type.items() if t == "vib_adxl"), None)
 
-        # 5) the payoff check: re-injected imbalance is matched locally
+        # 6) the payoff check: re-injected imbalance is matched locally
         if rechecked and injected and labeled:
             vib_ask = next((a for a in st["ask"] if a["node"] == vib), None)
             vib_cond = st["nodes"][vib]["cond"] if vib is not None else ""
-            if vib is not None and not vib_ask and vib_cond == "imbalance":
+            if vib is not None and not vib_ask \
+                    and vib_cond == "imbalance_op_speed_1":
                 return True, (f"vib node matched the re-injected imbalance "
                               f"locally at step {st['nodes'][vib]['step']} "
                               f"with no ask")
             if st["done"]:
                 return False, "run ended before the payoff check"
 
-        # the machine panel: user injects the fault
-        if not injected and st["machine"] == "normal" \
-                and st["nodes"][0]["step"] > 90:
-            c.post("/machine", {"ev": "IMBALANCE"})
-            injected = True
-            print("  injected IMBALANCE")
+        # 2) start the motor; once both nodes monitor, inject the fault
+        if not injected:
+            if st["machine"] == "op_stopped":
+                c.post("/machine", {"ev": "START"})
+                print("  START -> op_speed_1 (nodes calibrate on the run-up)")
+            elif st["machine"] == "op_speed_1" and vib is not None \
+                    and all(n["phase"] == "mon" for n in st["nodes"]):
+                c.post("/machine", {"ev": "IMBALANCE"})
+                injected = True
+                print("  injected IMBALANCE")
 
-        # 2) the oracle: label the injected fault, dismiss false alarms
+        # 4) the oracle: label the injected fault, dismiss false alarms
         if st["ask"] and st["holding"]:
             a = st["ask"][0]
-            is_vib_fault = (st["machine"].upper() == "IMBALANCE"
+            is_vib_fault = (st["machine"] == "imbalance"
                             and node_type.get(a["node"]) == "vib_adxl")
             if not labeled:
-                if is_vib_fault and not injected:
-                    pass  # ask came before the injection: not our event
-                elif is_vib_fault:
-                    c.post("/label", {"node": a["node"], "slug": "imbalance",
-                                      "action": "label"})
+                if is_vib_fault:
+                    c.post("/label", {"node": a["node"],
+                                      "slug": "imbalance@op_speed_1",
+                                      "action": "label", "kind": "fault"})
                     labeled = True
                     print(f"  labeled imbalance on node {a['node']} "
                           f"(step {a['step']})")
@@ -136,17 +147,17 @@ def run_loop(c: Client, steps: int):
             elif labeled and not rechecked:
                 c.post("/control", {"cmd": "continue"})
 
-        # 3) revert the machine once the labelled episode is closed
+        # 5) clear the fault once the labelled episode is closed
         if labeled and not reverted \
-                and st["machine"].upper() == "IMBALANCE" \
+                and st["machine"] == "imbalance" \
                 and not st["ask"]:
-            c.post("/machine", {"ev": "NONE"})
+            c.post("/machine", {"ev": "NORMAL"})
             reverted = True
-            print("  machine back to normal")
+            print("  fault cleared, back to op_speed_1")
 
-        # 4) second injection -> the payoff check arms
+        # 6) second injection -> the payoff check arms
         if labeled and reverted and not rechecked \
-                and st["machine"].lower() == "normal":
+                and st["machine"] == "op_speed_1":
             c.post("/machine", {"ev": "IMBALANCE"})
             rechecked = True
             print("  re-injected IMBALANCE (payoff check)")

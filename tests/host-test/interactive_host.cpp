@@ -26,9 +26,9 @@
 //     additionally get the centroid means mapped through their own space.
 //
 // Stdin protocol (the web server is the pacing brain):
-//   s                       advance every node by ONE monitor step
-//   F <STATE>               set the machine state:
-//                           NONE|SPEED|IMBALANCE|BEARING|HEAVY
+//   s                       advance every node by ONE monitor step (1 s)
+//   F <CMD>                 drive the machine: START|STOP|SPEED1|SPEED2|
+//                           IMBALANCE|LOOSE_MOUNT|PHASE_LOSS|NORMAL
 //   L <idx> <slug> <json>   applyFeedback(json) on node idx + sharing
 //   q                       quit
 // Per monitor step: one state line PER node:
@@ -40,9 +40,9 @@
 // Env:
 //   TINYRL_STEPS=<n>     monitor steps (default 900)
 //   TINYRL_NODES=<n>     nodes (default 2; 1 = single-node mode)
-//   TINYRL_AUTOAGENT=1   scripted agent answers asks; the machine state
-//                        self-injects on the CI timetable (200 speed,
-//                        380 imbalance, 560 bearing, 740 heavy)
+//   TINYRL_AUTOAGENT=1   scripted agent answers asks; the machine self-
+//                        injects on the CI timetable (40 start, 160 stop,
+//                        200 start, faults at 300/480/660 + recoveries)
 // =====================================================================
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -71,19 +71,40 @@ static constexpr FeatureInfo FEATS_VIB[6] = {
 };
 static constexpr FeatureProfile PROF_VIB = {"vib_adxl", 6, FEATS_VIB};
 
-// ---- machine truth: ONE motor, the USER injects its state ------------
-// The web UI drives it (F commands); CI self-injects on the timetable.
-// Each node renders the CURRENT machine state through its own modality.
-enum Ev { NONE, SPEED, IMBALANCE, BEARING, HEAVY };
-static Ev machine_state = NONE;
-static const char* truth_name(Ev e) {
-  switch (e) {
-    case SPEED:     return "op_speed_2";
-    case IMBALANCE: return "imbalance";
-    case BEARING:   return "bearing";
-    case HEAVY:     return "fault_heavy";
-    default:        return "normal";
+// ---- machine truth: ONE motor, the USER drives it from the panel -----
+// Model: running on/off, a speed setpoint, an optional fault overlay.
+// Three normal conditions only (user decision 2026-11-14):
+//   op_stopped (idle), op_speed_1 (5 Hz), op_speed_2 (20 Hz)
+//   faults:            imbalance, loose_mount, phase_loss (VFD -> motor)
+// Fault asks are labelled WITH their operating point (compound slug,
+// e.g. imbalance@op_speed_1): faults under different setpoints are
+// different library conditions.
+// Start/stop and setpoint moves ramp the ACTUAL speed over ~2 s (VFD
+// accel/decel). The set-frequency register reports the COMMANDED setpoint
+// directly (user fact: no motor feedback needed) - it steps instantly and
+// reads 0 while stopped. Drive slip is gone from the feature set.
+static constexpr float SP_HZ[2] = {5.0f, 20.0f};
+enum Ev { STOPPED, SPEED1, SPEED2, IMBALANCE, LOOSE_MOUNT, PHASE_LOSS };
+enum Fk { FK_NONE, FK_IMB, FK_MOUNT, FK_PHASE };
+
+static bool machine_running = false;   // boots NOT RUNNING
+static int  machine_sp = 0;            // SP_HZ index
+static Fk   machine_fk = FK_NONE;
+
+static const char* truth_ctx() {
+  return machine_running ? (machine_sp == 0 ? "op_speed_1" : "op_speed_2")
+                         : "op_stopped";
+}
+
+static const char* truth_name() {
+  if (!machine_running) return "op_stopped";
+  switch (machine_fk) {
+    case FK_IMB:   return "imbalance";
+    case FK_MOUNT: return "loose_mount";
+    case FK_PHASE: return "phase_loss";
+    default: break;
   }
+  return truth_ctx();
 }
 
 class ScriptedSensor : public ISensorNode {
@@ -92,7 +113,7 @@ public:
   void setSeed(unsigned long s) { lcg_ = s; }
 
   bool begin() override { step_ = 0; return true; }
-  void poll() override { step_++; scenario(step_); }
+  void poll() override { step_++; scenario(); }
   uint32_t pollPeriodMs() const override { return 1000; }
   bool fresh() const override { return step_ > 0; }
   uint32_t lastOkMs() const override { return millis(); }
@@ -108,56 +129,130 @@ public:
     return o;
   }
 
-  // scripted-truth hint for the CI agent = the CURRENT machine state
-  const char* anomalyLabel() const { return truth_name(machine_state); }
+  // scripted-truth hint for the CI agent = machine truth + operating point
+  // (faults are labelled as compound slugs: imbalance@op_speed_1, ...)
+  const char* anomalyLabel() {
+    const char* t = truth_name();
+    if (machine_fk == FK_NONE) return t;
+    snprintf(label_buf_, sizeof(label_buf_), "%s@%s", t, truth_ctx());
+    return label_buf_;
+  }
+
+  // polls so far; lets the host advance time through idle phases
+  long polls() const { return step_; }
+
+  // command the machine; the speed itself ramps, the fault overlays
+  void setMachine(bool run, int sp, Fk fk) {
+    float target = run ? SP_HZ[sp] : 0.0f;
+    ramp_rate_ = fabsf(target - f_ref_) / 2.0f;   // ~2 s to the setpoint
+    f_ref_ = target;
+  }
 
 private:
-  void scenario(long t) {
-    Ev e = machine_state;
-    if (prof_ == &PROF_G100) {
-      // drive side: thermal drift + noise, then the event's drive response
-      float warm = 1.0f - expf(-t / 900.0f);
-      f_[0] = 3.0f + 0.05f * warm + noise(lcg_, 0.05f);
-      f_[1] = 0.25f + 0.008f * warm + noise(lcg_, 0.03f);
-      f_[2] = 585.0f + noise(lcg_, 1.0f);
-      f_[3] = 45.0f + 0.30f * warm + noise(lcg_, 1.5f);
-      if (e == SPEED) {      // setpoint move: drive features shift and stay
-        f_[0] += 0.10f; f_[1] += 0.06f; f_[3] += 2.0f; f_[2] -= 1.0f;
-      }
-      if (e == IMBALANCE) {  // mechanical: the drive barely notices
-        f_[0] += 0.05f; f_[3] += 1.2f;
-      }
-      if (e == HEAVY) { f_[0] += 0.20f; f_[3] += 4.0f; f_[2] -= 4.0f; }
-      // BEARING: drive-side blind by construction
-    } else {
-      // vibration side: rms ~ 0.035 g, band powers scale with rms^2,
-      // fmax = 1x running speed (~24 Hz)
-      float rms = 0.035f * (1.0f + noise(lcg_, 0.2f));
-      float b[4], c[4] = {0.0025f, 0.0010f, 0.0004f, 0.00015f};
-      for (int k = 0; k < 4; k++)
-        b[k] = c[k] * (rms / 0.035f) * (rms / 0.035f) * (1.0f + noise(lcg_, 0.4f));
-      float fmax = 24.2f + noise(lcg_, 1.5f);
-      if (e == IMBALANCE) {  // 1x-speed band dominates
-        rms *= 1.5f; b[0] *= 2.5f;
-      }
-      if (e == BEARING) {    // high bands + defect tone
-        rms *= 1.15f; b[2] *= 3.0f; b[3] *= 4.0f; fmax = 28.0f + noise(lcg_, 2.0f);
-      }
-      if (e == HEAVY) {      // everything lights up
-        rms *= 3.0f; b[0] *= 3.0f; b[1] *= 2.5f; b[2] *= 2.5f; b[3] *= 3.0f;
-      }
-      f_[0] = rms;
-      f_[1] = b[0]; f_[2] = b[1]; f_[3] = b[2]; f_[4] = b[3];
-      f_[5] = fmax;
-      // SPEED: the vibration signature is unchanged (setpoint trim, same
-      // load) - the modality split the collective layer exists to expose
+  // band edges of the real ADXL FFT (vibration_sensor.h)
+  static int band_of(float f) {
+    if (f <= 7.8f) return 0;
+    if (f <= 23.4f) return 1;
+    if (f <= 54.7f) return 2;
+    return 3;
+  }
+  void add_tone(float f, float p, float* b) const {
+    if (p <= 0.0f || f < 1.6f) return;   // below band 1: no tone
+    b[band_of(f)] += p;
+  }
+
+  void scenario() {
+    // actual speed chases the commanded target at the commanded ramp rate
+    if (f_out_ < f_ref_)
+      f_out_ += (f_ref_ - f_out_ < ramp_rate_) ? f_ref_ - f_out_ : ramp_rate_;
+    else if (f_out_ > f_ref_)
+      f_out_ -= (f_out_ - f_ref_ < ramp_rate_) ? f_out_ - f_ref_ : ramp_rate_;
+    bool ramping = fabsf(f_ref_ - f_out_) > 0.1f;
+    bool accel = f_ref_ > f_out_;
+    if (prof_ == &PROF_G100) scenario_g100(ramping, accel);
+    else                     scenario_vib();
+  }
+
+  void scenario_g100(bool ramping, bool accel) {
+    // constant-torque load: current/torque ~flat across speeds. The set
+    // frequency register reports the COMMANDED setpoint directly (user
+    // fact: no motor feedback needed) - it steps instantly on a setpoint
+    // move and reads 0 while stopped, making the drive's speed/stopped
+    // conditions cleanly separable. Bus stays charged, output current 0.
+    float warm = 1.0f - expf(-step_ / 900.0f);   // gentle thermal drift
+    float fset = f_ref_;
+    float i = 3.0f + 0.05f * warm;
+    float tq = 45.0f + 0.30f * warm;
+    float vdc = 585.0f;
+    float ni = 0.05f, nvdc = 1.0f, ntq = 1.5f;
+    if (ramping) {                                // accel/decel transient
+      if (accel) { i += 0.8f; tq += 12.0f; vdc -= 2.5f; }
+      else       { i -= 0.4f; tq -= 8.0f; vdc += 2.5f; }
     }
+    switch (machine_fk) {
+      case FK_IMB: i += 0.05f; tq += 1.2f; break;          // barely notices
+      case FK_MOUNT: i += 0.10f; tq += 2.0f; ntq = 4.5f; break;
+      case FK_PHASE: i = i * 1.30f; tq -= 12.0f;
+                     vdc -= 3.0f; ni = 0.12f; nvdc = 2.5f; break;
+      default: break;
+    }
+    if (f_out_ < 0.5f) {   // output disabled; setpoint register still reads
+      i = 0.0f; tq = 0.0f;
+      ni = 0.02f; ntq = 0.1f;
+    }
+    f_[0] = i + noise(lcg_, ni);
+    f_[1] = fset + noise(lcg_, 0.01f);
+    f_[2] = vdc + noise(lcg_, nvdc);
+    f_[3] = fabsf(tq + noise(lcg_, ntq));
+  }
+
+  void scenario_vib() {
+    // rms grows with the 1x mechanical speed; tones land in the FFT band
+    // that contains their frequency, so band content MOVES with speed.
+    float f_mech = 0.485f * f_out_;   // 1x (4-pole on a VFD)
+    float rms = f_out_ > 0.5f ? 0.005f + 0.0048f * f_mech : 0.004f;
+    switch (machine_fk) {
+      case FK_IMB: rms *= 1.5f; break;
+      case FK_MOUNT: rms *= 1.2f; break;
+      case FK_PHASE: rms *= 1.3f; break;
+      default: break;
+    }
+    float r2 = rms * rms;
+    float b[4] = {0, 0, 0, 0};
+    add_tone(f_mech, 0.55f * r2, b);           // 1x running speed
+    add_tone(2 * f_mech, 0.12f * r2, b);       // 2x
+    add_tone(3 * f_mech, 0.05f * r2, b);       // 3x
+    for (int k = 0; k < 4; k++) b[k] += 0.07f * r2;   // broadband floor
+    switch (machine_fk) {
+      case FK_IMB: add_tone(f_mech, 0.90f * r2, b); break;      // 1x dominates
+      case FK_MOUNT:            // broadband rattle + running-speed harmonics
+        for (int k = 0; k < 4; k++) b[k] += 0.30f * r2;
+        add_tone(2 * f_mech, 0.30f * r2, b);
+        add_tone(3 * f_mech, 0.25f * r2, b);
+        add_tone(4 * f_mech, 0.15f * r2, b);
+        break;
+      case FK_PHASE:                                            // 2x electrical
+        add_tone(2.0f * f_out_, 0.85f * r2, b);
+        break;
+      default: break;
+    }
+    for (int k = 0; k < 4; k++) b[k] *= (1.0f + noise(lcg_, 0.4f));
+    f_[0] = rms * (1.0f + noise(lcg_, 0.2f));
+    f_[1] = b[0]; f_[2] = b[1]; f_[3] = b[2]; f_[4] = b[3];
+    f_[5] = f_out_ < 0.5f ? 0.8f + noise(lcg_, 1.5f)              // floor
+          : machine_fk == FK_PHASE
+            ? 2.0f * f_out_ + noise(lcg_, 0.5f)                   // 2x elec
+            : f_mech + noise(lcg_, 0.3f);                         // 1x
   }
 
   const FeatureProfile* prof_ = &PROF_G100;
   unsigned long lcg_ = 12345;
   float f_[8] = {0};
   long step_ = 0;
+  char label_buf_[48] = "";   // compound CI truth label
+  float f_ref_ = 0.0f;    // commanded speed (Hz), 0 = not running
+  float f_out_ = 0.0f;    // actual speed (Hz), ramps toward f_ref_
+  float ramp_rate_ = 0.0f;
 };
 
 // ---- one node rig ------------------------------------------------------
@@ -175,6 +270,7 @@ static Rig rigs[8];
 static int n_nodes = 2;
 
 static void print_state();
+static void set_machine(const char* name);
 
 // scripted agent (CI mode): answer an ask 3 steps after it opens, using
 // the machine truth as the label hint.
@@ -186,10 +282,14 @@ static void autoagent(Rig& r, int idx) {
   if (strcmp(r.app.conditionId(), "unknown") == 0) {
     if (r.ask_age >= 3 && !r.asked) {
       const char* lb = r.sensor.anomalyLabel();
-      char j[96];
+      // truth conditions starting op_ are NORMAL operating points; the
+      // rest are faults - the kind rides with the label (B-rule)
+      const char* kd = (lb && strncmp(lb, "op_", 3) == 0) ? "normal" : "fault";
+      char j[128];
       if (lb) {
         snprintf(j, sizeof(j),
-                 "{\"action\":\"label\",\"label\":\"%s\",\"by\":\"agent\"}", lb);
+                 "{\"action\":\"label\",\"label\":\"%s\","
+                 "\"kind\":\"%s\",\"by\":\"agent\"}", lb, kd);
       } else {
         snprintf(j, sizeof(j), "{\"action\":\"normal\",\"by\":\"agent\"}");
       }
@@ -284,24 +384,31 @@ static void print_state() {
 
 static void step_all(bool autoagent_on) {
   // CI self-injection: the timetable stands in for a human at the panel
-  // (inject 20 steps, revert, let the episode clear, next fault)
+  // (learn on a running motor, exercise stop/start, then three faults)
   if (autoagent_on) {
-    static const struct { long at; Ev ev; } inj[] = {
-      {200, SPEED}, {220, NONE}, {380, IMBALANCE}, {400, NONE},
-      {560, BEARING}, {580, NONE}, {740, HEAVY}, {760, NONE},
+    static const struct { long at; const char* cmd; } inj[] = {
+      {40, "START"}, {160, "STOP"}, {200, "START"},
+      {300, "IMBALANCE"}, {330, "NORMAL"},
+      {480, "LOOSE_MOUNT"}, {510, "NORMAL"},
+      {660, "PHASE_LOSS"}, {690, "NORMAL"},
     };
     static int inj_idx = 0;
-    if (inj_idx < 8 && rigs[0].last_step >= inj[inj_idx].at) {
-      machine_state = inj[inj_idx].ev;
-      printf("M %s\n", truth_name(machine_state));
-      printf("[MACHINE] %s\n", truth_name(machine_state));
+    if (inj_idx < 9 && rigs[0].last_step >= inj[inj_idx].at) {
+      set_machine(inj[inj_idx].cmd);
       inj_idx++;
     }
   }
   for (int i = 0; i < n_nodes; ++i) {
-    long before = rigs[i].app.stepCount();
-    while (rigs[i].app.stepCount() == before) rigs[i].app.tick();
-    rigs[i].last_step = (long)rigs[i].app.stepCount();
+    if (strcmp(rigs[i].app.phase(), "idle") == 0) {
+      // no monitor steps while idle (feed is learning-gated): advance one
+      // sensor poll (1 s) so time still flows before START
+      long p0 = rigs[i].sensor.polls();
+      while (rigs[i].sensor.polls() == p0) rigs[i].app.tick();
+    } else {
+      long before = rigs[i].app.stepCount();
+      while (rigs[i].app.stepCount() == before) rigs[i].app.tick();
+    }
+    rigs[i].last_step = rigs[i].sensor.polls();   // S-line step = sim time
     if (autoagent_on) autoagent(rigs[i], i);
   }
   print_state();
@@ -315,17 +422,37 @@ static void step_all(bool autoagent_on) {
   }
 }
 
-// share a user label: asking node first, then the collective rules
+// user commands from the web panel (F protocol); pushes to every sensor
 static void set_machine(const char* name) {
-  Ev e = NONE;
-  if (strcmp(name, "SPEED") == 0) e = SPEED;
-  else if (strcmp(name, "IMBALANCE") == 0) e = IMBALANCE;
-  else if (strcmp(name, "BEARING") == 0) e = BEARING;
-  else if (strcmp(name, "HEAVY") == 0) e = HEAVY;
-  else if (strcmp(name, "NONE") != 0 && strcmp(name, "NORMAL") != 0) return;
-  machine_state = e;
-  printf("M %s\n", truth_name(machine_state));
-  printf("[MACHINE] set to %s\n", truth_name(machine_state));
+  if (strcmp(name, "START") == 0) {
+    machine_running = true;
+    // learning gate: nodes calibrate on the LIVE running motor, never on
+    // a stopped one. Safe to call again: theta-ready nodes just print a
+    // hint; the typed console 'reset' stays the factory-reset path.
+    for (int i = 0; i < n_nodes; ++i)
+      if (strcmp(rigs[i].app.phase(), "idle") == 0)
+        rigs[i].app.startLearning();
+  } else if (strcmp(name, "STOP") == 0) {
+    machine_running = false;
+  } else if (strcmp(name, "SPEED1") == 0) {
+    machine_sp = 0;
+  } else if (strcmp(name, "SPEED2") == 0) {
+    machine_sp = 1;
+  } else if (strcmp(name, "IMBALANCE") == 0) {
+    machine_fk = FK_IMB;
+  } else if (strcmp(name, "LOOSE_MOUNT") == 0) {
+    machine_fk = FK_MOUNT;
+  } else if (strcmp(name, "PHASE_LOSS") == 0) {
+    machine_fk = FK_PHASE;
+  } else if (strcmp(name, "NORMAL") == 0) {
+    machine_fk = FK_NONE;
+  } else {
+    return;
+  }
+  for (int i = 0; i < n_nodes; ++i)
+    rigs[i].sensor.setMachine(machine_running, machine_sp, machine_fk);
+  printf("M %s %s\n", truth_name(), truth_ctx());
+  printf("[MACHINE] %s at %s\n", truth_name(), truth_ctx());
 }
 
 static void do_label(int idx, const char* slug, const char* json) {
@@ -344,13 +471,17 @@ static void do_label(int idx, const char* slug, const char* json) {
       continue;
     }
     // same-profile sibling: share the asking node's episode means as a
-    // centroid mapped through the sibling's own frozen space
+    // centroid mapped through the sibling's own frozen space; the kind
+    // travels with the slug (parsed from the label JSON)
     if (&rigs[j].sensor.profile() == &rigs[idx].sensor.profile()
         && slug[0]) {
       float means[8];
       rigs[idx].app.episodeMeans(means);
-      int s = rigs[j].app.shareLabel(slug, means);
-      printf("[SHARE] centroid '%s' -> node %d (lib idx %d)\n", slug, j, s);
+      CondKind k = strstr(json, "\"kind\":\"normal\"") ? COND_NORMAL
+                                                       : COND_FAULT;
+      int s = rigs[j].app.shareLabel(slug, means, k);
+      printf("[SHARE] centroid '%s' (%s) -> node %d (lib idx %d)\n",
+             slug, k == COND_NORMAL ? "normal" : "fault", j, s);
     }
     // mixed-profile siblings: slug only (vocabulary); centroids are
     // meaningless across feature spaces
@@ -393,8 +524,7 @@ int main() {
     id.wifi_pass = "bench";
     id.mqtt_host = "127.0.0.1";
     id.mqtt_port = 1883;
-    rigs[i].app.begin(rigs[i].sensor, id);
-    rigs[i].app.startLearning();
+    rigs[i].app.begin(rigs[i].sensor, id);   // nodes idle until START
   }
 
   printf("META nodes=%d steps=%ld", n_nodes, total);
@@ -403,6 +533,7 @@ int main() {
            rigs[i].sensor.profile().node_type,
            rigs[i].sensor.profile().n_features);
   printf("\nREADY\n");
+  printf("M %s %s\n", truth_name(), truth_ctx());   // boot truth: NOT running
 
   char line[256];
   bool run = true;

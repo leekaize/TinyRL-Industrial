@@ -34,6 +34,15 @@ constexpr float    THETA_KSIG     = 4.0f;   // theta = mu + KSIG * sigma
 constexpr float    SCORE_FLOOR    = 1e-4f;
 constexpr int      ALARM_HI_N     = 5;      // consecutive breaches -> alarm
 constexpr int      CLEAR_LO_N     = 60;     // consecutive quiet    -> clear
+// Frozen-z clamp (found via the CI timetable, 2026-11-14): after fit, a
+// regime far outside the fit window (machine STOPPED while theta was fit
+// at running) produces z-scores in the hundreds. Unbounded, they blast
+// the net weights and leave the steady surprise baseline above theta -
+// the alarm latches and the node goes deaf to every later fault. The
+// condition space already clamps (frozen 0..1 ranges); the monitor's
+// frozen z needs the same guard. 5.0 keeps all in-fit noise (~+-4)
+// and 2-4 sigma fault signals untouched.
+constexpr float    Z_CLAMP        = 5.0f;
 
 // ---- TinyRL agent (network + streaming optimizer) ----
 // Default optimizer: StreamingOptimizer (Stream-X v3, nodes/core/
@@ -53,14 +62,23 @@ constexpr uint32_t SEED           = 20260101u; // 0 = seed from TRNG at boot
 
 // ---- condition library ----
 constexpr int      LIB_MAX        = 12;     // learned conditions per node
-constexpr float    LIB_MATCH_D    = 0.30f;  // nearest-centroid threshold (mean dist)
+// Matching is MAX-COMPONENT (bench finding 2026-11-14: the mean over 4-6
+// features lets one discriminative feature be outvoted by the flat ones),
+// in log2-ratio units (rel(), feature_space.h), with a PER-FEATURE radius:
+// q * unit(f), unit(f) = log2(1 + CAL sigma/mu). One global radius cannot
+// serve both nodes: vib bands jitter +-40% while the drive's fault
+// excursions are +-30% - the radius must scale with each feature's own
+// calibrated noise. Condition positions are log2(x/mu) decades, clamped.
+constexpr float    REL_CLAMP      = 6.0f;   // rel() saturation (decades)
+constexpr float    QUIET_Q        = 3.0f;   // alarm-quiet + episode pre-name
+constexpr float    MATCH_Q        = 4.0f;   // tripwire + recognised-normal display
 // Settles 2012 ch. 2.5 myopia tripwire: log line every N quiet-unmatched steps
 constexpr uint32_t QUM_REPORT_EVERY = 1000;
 
 // ---- persistence ----
 constexpr uint32_t AUTOSAVE_MS    = 300000; // flash wear: <=12 writes/hour
 constexpr uint32_t MODEL_MAGIC    = 0x54524C34u; // "TRL4"
-constexpr uint32_t MODEL_VERSION  = 4;
+constexpr uint32_t MODEL_VERSION  = 5;     // v5: condition space anchors (mu)
 constexpr uint32_t NET_MAGIC      = 0x54524C4Eu; // "TRLN"
 constexpr uint32_t NET_VERSION    = 1;
 

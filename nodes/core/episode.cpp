@@ -46,8 +46,14 @@ void EpisodeManager::open(const float* x, const FeatureSpace& fs, uint32_t now) 
   t0_ = now;
   n_ = 1;
   for (int f = 0; f < prof_->n_features; ++f) sum_[f] = x[f];
-  int m = lib_ ? lib_->match(x, fs) : -1;
+  int m = lib_ ? lib_->match(x, fs, cfg::QUIET_Q) : -1;
+  // pre-name ONLY on a confident match (QUIET_Q): at a loose radius the
+  // start-transient centroid swallowed real faults and recorded them
+  // under a normal's name with no ask (bench finding, 2026-11-14).
+  // Ambiguous openings stay "unknown" and ask - that is the design: the
+  // collective gives evidence, the operator decides.
   snprintf(cond_, sizeof(cond_), "%s", m >= 0 ? lib_->at(m).id : "unknown");
+  kind_ = (m >= 0) ? lib_->at(m).kind : COND_FAULT;
 
   char sum[192];
   summary(sum, sizeof(sum), now);
@@ -81,9 +87,10 @@ void EpisodeManager::close(const char* how, const FeatureSpace& fs, uint32_t now
   open_ = false;
 }
 
-void EpisodeManager::relabel(const char* slug, uint32_t now) {
+void EpisodeManager::relabel(const char* slug, CondKind kind, uint32_t now) {
   if (!open_) return;
   snprintf(cond_, sizeof(cond_), "%s", slug);
+  kind_ = kind;
   char sum[192];
   summary(sum, sizeof(sum), now);
   float mean[cfg::MAX_FEATURES];

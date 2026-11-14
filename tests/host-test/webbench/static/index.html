@@ -7,25 +7,28 @@
 <div id="errbar" class="hidden"></div>
 <h1>Interactive monitor bench - <span id="hdr"></span></h1>
 <div class="controls">
- <button id="b_play">pause</button>
- <button id="b_step" class="grey">+25 steps</button>
- <select id="speed"><option value="1">1x</option><option value="3">3x</option>
- <option value="10">10x</option></select>
+ <button id="b_run5">+5 s</button>
+ <button id="b_run60">+60 s</button>
  <button id="b_export" class="grey">export run</button>
  <span id="status"></span>
 </div>
 <div class="machine">
  <div>
-  <b>MOTOR CONDITION</b><br>
-  <span id="m_state" class="m-normal">normal</span>
+  <b>MOTOR</b><br>
+  <span id="m_state" class="m-normal">op_stopped</span>
  </div>
  <div class="inject">
+  <span>run:</span>
+  <button class="ok" onclick="inject('START')">start motor</button>
+  <button onclick="inject('STOP')">stop motor</button>
+  <span>setpoint:</span>
+  <button onclick="inject('SPEED1')">speed 1 (5 Hz)</button>
+  <button onclick="inject('SPEED2')">speed 2 (20 Hz)</button>
   <span>inject fault:</span>
-  <button onclick="inject('SPEED')">speed trim (op 2)</button>
   <button onclick="inject('IMBALANCE')">imbalance</button>
-  <button onclick="inject('BEARING')">bearing defect</button>
-  <button onclick="inject('HEAVY')">heavy fault</button>
-  <button class="ok" onclick="inject('NONE')">back to normal</button>
+  <button onclick="inject('LOOSE_MOUNT')">loose mounting</button>
+  <button onclick="inject('PHASE_LOSS')">phase loss</button>
+  <button class="ok" onclick="inject('NORMAL')">clear fault</button>
  </div>
 </div>
 <div id="ask" class="hidden"></div>

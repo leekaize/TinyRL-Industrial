@@ -8,6 +8,7 @@
 #include <vector>
 #include <utility>
 #include "tinyrl_monitor.h"
+#include "condition_library.h"
 
 // Layer-aware sparse-init densities (Stream-X v3 App. C, adapted). The
 // global nonzero budget (1 - NET_SPARSITY) * total_weights is distributed
@@ -132,6 +133,10 @@ void TinyRLConditionMonitor::factoryReset() {
   has_prev_ = false;
 }
 
+void TinyRLConditionMonitor::attachLibrary(const ConditionLibrary* lib) {
+  lib_ = lib;
+}
+
 void TinyRLConditionMonitor::onWorldChange() {
   // Regime change (e.g. a just-labelled episode): keep the weights but
   // drop optimizer state (traces + leaky max) so old gradients and old
@@ -164,7 +169,10 @@ ag::Matrix TinyRLConditionMonitor::frozenNorm(const ag::Matrix& x) const {
   ag::Matrix out(1, nf_);
   for (int f = 0; f < nf_; ++f) {
     float sd = sqrtf(nm_var_(0, f) + 1e-8f);
-    out(0, f) = (x(0, f) - nm_mean_(0, f)) / sd;
+    float z = (x(0, f) - nm_mean_(0, f)) / sd;
+    if (z > cfg::Z_CLAMP) z = cfg::Z_CLAMP;         // out-of-fit regimes
+    if (z < -cfg::Z_CLAMP) z = -cfg::Z_CLAMP;       // stay bounded (see cfg)
+    out(0, f) = z;
   }
   return out;
 }
@@ -242,16 +250,21 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
     return;                                     // no alarms while fitting
   }
 
-  // 5) threshold logic (MVP semantics, one repair): the 0.7..1.0 theta
+  // 5) threshold logic (MVP semantics, two repairs). The 0.7..1.0 theta
   // band grants no alarm credit (anti-flap near theta), but it DOES count
-  // as quiet. With theta = mu + 4 sigma and mu dominating, 0.7*theta sits
-  // inside the quiet score distribution, so requiring 60 consecutive
-  // steps UNDER 0.7*theta made a self-clear structurally impossible -
-  // found by the interactive bench (2026-11-13): the score spends ~half
-  // its quiet steps in the band and the alarm latched forever.
-  if (score_ > theta_)                 { hi_++; lo_ = 0; }
-  else if (score_ > 0.7f * theta_)     { hi_ = 0; lo_++; }
-  else                                 { lo_++; hi_ = 0; }
+  // as quiet (repair: requiring 60 steps UNDER 0.7*theta latched forever,
+  // bench finding 2026-11-13). Second repair (B-rule, 2026-11-14): a
+  // situation matching a NORMAL-kind library centroid is KNOWN, not
+  // unknown - the operator named it, so surprise there is the net's
+  // cross-regime confusion, not an anomaly. It counts as quiet and clears
+  // an open alarm immediately; theta stays untouched. Fault-kind centroids
+  // never quiet an alarm: a sustained real fault keeps alarming.
+  int km = lib_ ? lib_->match(last_raw_, space(), cfg::QUIET_Q) : -1;
+  if (km >= 0 && lib_->at(km).kind == COND_NORMAL) {
+    lo_ = cfg::CLEAR_LO_N;  hi_ = 0;
+  } else if (score_ > theta_)            { hi_++; lo_ = 0; }
+  else if (score_ > 0.7f * theta_)       { hi_ = 0; lo_++; }
+  else                                   { lo_++; hi_ = 0; }
 
   if (!alarmed_ && hi_ >= cfg::ALARM_HI_N) {
     alarmed_ = true;
@@ -284,6 +297,8 @@ void TinyRLConditionMonitor::exportState(State& s) const {
   s.theta_ready = theta_ready_; s.alarm = alarmed_;
   s.hi = hi_; s.lo = lo_;
   for (int f = 0; f < cfg::MAX_FEATURES; ++f) {
+    s.fs_mu[f] = (f < nf_) ? fs_.mu(f) : 0;
+    s.fs_unit[f] = (f < nf_) ? fs_.unit(f) : 0;
     s.fs_lo[f] = (f < nf_) ? fs_.lo(f) : 0;
     s.fs_hi[f] = (f < nf_) ? fs_.hi(f) : 0;
     s.nm_mean[f] = (f < nf_) ? nm_mean_(0, f) : 0;
@@ -303,9 +318,13 @@ bool TinyRLConditionMonitor::importState(const State& s) {
   has_prev_ = false;
 
   if (theta_ready_) {
-    // exact resume: frozen ranges + frozen normalizer are sufficient
+    // exact resume: frozen anchors/ranges + frozen normalizer are enough
     fs_.begin(nf_);
-    for (int f = 0; f < nf_; ++f) fs_.setRange(f, s.fs_lo[f], s.fs_hi[f]);
+    for (int f = 0; f < nf_; ++f) {
+      fs_.setMu(f, s.fs_mu[f]);
+      fs_.setUnit(f, s.fs_unit[f]);
+      fs_.setRange(f, s.fs_lo[f], s.fs_hi[f]);
+    }
     fs_.forceArmed(s.fs_armed != 0, s.fs_steps);
     for (int f = 0; f < nf_; ++f) {
       nm_mean_(0, f) = s.nm_mean[f];

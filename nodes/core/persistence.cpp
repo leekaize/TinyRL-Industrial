@@ -8,12 +8,14 @@
 #include "condition_library.h"
 
 // ---- POD mirror of TinyRLConditionMonitor::State (fixed layout) -------
-struct ModelBlobV4 {
+struct ModelBlobV5 {
   uint32_t magic, version;
   float    score, fit_mu, fit_m2, theta;
   uint32_t step;
   uint8_t  cal, theta_ready, alarm;
   int16_t  hi, lo;
+  float    fs_mu[cfg::MAX_FEATURES];               // C-space anchors (v5)
+  float    fs_unit[cfg::MAX_FEATURES];             // per-feature match units (v5)
   float    fs_lo[cfg::MAX_FEATURES], fs_hi[cfg::MAX_FEATURES];
   uint8_t  fs_armed;
   uint32_t fs_steps;
@@ -31,12 +33,14 @@ bool beginFS() {
 bool modelSave(const TinyRLConditionMonitor& m) {
   TinyRLConditionMonitor::State s;
   m.exportState(s);
-  ModelBlobV4 b{};
+  ModelBlobV5 b{};
   b.magic = cfg::MODEL_MAGIC; b.version = cfg::MODEL_VERSION;
   b.score = s.score; b.fit_mu = s.fit_mu; b.fit_m2 = s.fit_m2; b.theta = s.theta;
   b.step = s.step;
   b.cal = s.cal; b.theta_ready = s.theta_ready; b.alarm = s.alarm;
   b.hi = s.hi; b.lo = s.lo;
+  memcpy(b.fs_mu, s.fs_mu, sizeof(b.fs_mu));
+  memcpy(b.fs_unit, s.fs_unit, sizeof(b.fs_unit));
   memcpy(b.fs_lo, s.fs_lo, sizeof(b.fs_lo));
   memcpy(b.fs_hi, s.fs_hi, sizeof(b.fs_hi));
   b.fs_armed = s.fs_armed; b.fs_steps = s.fs_steps;
@@ -54,7 +58,7 @@ bool modelLoad(TinyRLConditionMonitor& m) {
   if (!LittleFS.exists(cfg::MODEL_FILE)) return false;
   File f = LittleFS.open(cfg::MODEL_FILE, "r");
   if (!f) return false;
-  ModelBlobV4 b{};
+  ModelBlobV5 b{};
   size_t n = f.read((uint8_t*)&b, sizeof(b));
   f.close();
   if (n != sizeof(b) || b.magic != cfg::MODEL_MAGIC ||
@@ -65,6 +69,8 @@ bool modelLoad(TinyRLConditionMonitor& m) {
   s.step = b.step;
   s.cal = b.cal; s.theta_ready = b.theta_ready; s.alarm = b.alarm;
   s.hi = b.hi; s.lo = b.lo;
+  memcpy(s.fs_mu, b.fs_mu, sizeof(s.fs_mu));
+  memcpy(s.fs_unit, b.fs_unit, sizeof(s.fs_unit));
   memcpy(s.fs_lo, b.fs_lo, sizeof(s.fs_lo));
   memcpy(s.fs_hi, b.fs_hi, sizeof(s.fs_hi));
   s.fs_armed = b.fs_armed; s.fs_steps = b.fs_steps;

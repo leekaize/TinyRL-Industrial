@@ -3,10 +3,14 @@
 //
 // This file is where the ENVIRONMENT defines WHAT the node perceives.
 // The 4 features and their order are the node's identity to the brain:
-//   0: i     RMS current        [A]
-//   1: slip  |f_ref - f_out|    [Hz]
-//   2: vdc   DC bus voltage     [V]
-//   3: tq    |torque|           [%]
+//   0: i     RMS current              [A]
+//   1: fset  commanded set frequency [Hz]  (register read, no motor
+//                                         feedback needed - user fact,
+//                                         2026-11-14; replaces slip which
+//                                         needed the output-frequency
+//                                         register)
+//   2: vdc   DC bus voltage          [V]
+//   3: tq    |torque|                [%]
 // These names/units feed: UNS payloads (meas map), condition-library
 // centroids, console output. Changing order invalidates old models.
 // =====================================================================
@@ -30,7 +34,7 @@ public:
 
   void features(float* out) const override {
     out[0] = tele_.i_rms;
-    out[1] = fabsf(tele_.slip);
+    out[1] = tele_.f_ref;            // commanded setpoint, out of the box
     out[2] = tele_.v_dc;
     out[3] = fabsf(tele_.torque);
   }
@@ -46,7 +50,7 @@ private:
 
   // C++17 inline constexpr: node's feature identity lives in the header
   static constexpr FeatureInfo FEATS[4] = {
-    {"i", "A"}, {"slip", "Hz"}, {"vdc", "V"}, {"tq", "%"},
+    {"i", "A"}, {"fset", "Hz"}, {"vdc", "V"}, {"tq", "%"},
   };
   static constexpr FeatureProfile PROF = {"vfd_g100", 4, FEATS};
 

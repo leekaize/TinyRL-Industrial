@@ -28,10 +28,11 @@ public:
   void open(const float* x, const FeatureSpace& fs, uint32_t now);
   void feed(const float* x);
   void close(const char* how, const FeatureSpace& fs, uint32_t now);
-  void relabel(const char* slug, uint32_t now);   // after Action/feedback
+  void relabel(const char* slug, CondKind kind, uint32_t now);
 
   bool     isOpen() const { return open_; }
   const char* cond() const { return cond_[0] ? cond_ : "unknown"; }
+  CondKind kind() const { return kind_; }             // normal | fault
   uint32_t duration(uint32_t now) const;
   void     means(float* out) const;               // raw engineering units
   size_t   summary(char* out, size_t cap, uint32_t now) const;
@@ -46,4 +47,5 @@ private:
   uint32_t t0_ = 0, n_ = 0;
   float    sum_[cfg::MAX_FEATURES];
   char     cond_[24];
+  CondKind kind_ = COND_FAULT;   // unknown episodes never auto-accept
 };

@@ -52,6 +52,8 @@ using MonitorOpt = StreamingOptimizer;
 #include "sensor_interface.h"
 #include "node_config.h"
 
+class ConditionLibrary;
+
 class TinyRLConditionMonitor {
 public:
   struct StepOut {
@@ -68,6 +70,7 @@ public:
   void onWorldChange();        // regime changed (label event): drop traces
   void onFeedbackNormal();     // false alarm -> desensitise (raise theta)
   void onFeedbackFault();      // confirmed  -> sharpen (lower theta)
+  void attachLibrary(const ConditionLibrary* lib);  // optional observer
 
   // state queries
   bool     learning()   const { return learning_; }
@@ -94,6 +97,8 @@ public:
     uint32_t step;
     uint8_t  cal, theta_ready, alarm;
     int16_t  hi, lo;
+    float    fs_mu[cfg::MAX_FEATURES];              // C-space anchors (v5)
+    float    fs_unit[cfg::MAX_FEATURES];            // per-feature match units (v5)
     float    fs_lo[cfg::MAX_FEATURES], fs_hi[cfg::MAX_FEATURES];
     uint8_t  fs_armed;
     uint32_t fs_steps;
@@ -122,6 +127,11 @@ private:
 
   // condition space
   FeatureSpace fs_;
+
+  // optional library observer (B-rule, 2026-11-14): features matching a
+  // NORMAL-kind centroid are a known situation, not an unknown one - they
+  // count as quiet regardless of surprise score. Theta stays untouched.
+  const ConditionLibrary* lib_ = nullptr;
 
   // score pipeline + phase machine
   float    score_ = 0, last_surprise_ = 1.0f;
