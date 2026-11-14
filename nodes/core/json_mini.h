@@ -9,10 +9,13 @@
 #include <stdio.h>
 
 inline bool jsonStr(const char* j, const char* key, char* out, size_t outlen) {
-  char pat[24]; snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+  char pat[24]; snprintf(pat, sizeof(pat), "\"%s\":", key);
   const char* p = strstr(j, pat);
   if (!p) return false;
-  p += strlen(pat); size_t i = 0;
+  p += strlen(pat);
+  while (*p == ' ' || *p == '\t') ++p;   // tolerate "key": "value"
+  if (*p != '"') return false;
+  ++p; size_t i = 0;
   while (*p && *p != '"' && i < outlen - 1) out[i++] = *p++;
   out[i] = 0; return true;
 }

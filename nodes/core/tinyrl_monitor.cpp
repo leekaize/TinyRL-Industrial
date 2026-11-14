@@ -100,7 +100,7 @@ void TinyRLConditionMonitor::begin(const FeatureProfile& prof) {
 
 void TinyRLConditionMonitor::startLearning() {
   if (theta_ready_) {
-    Serial.println("[RL] already monitoring - factory reset ('L') to relearn");
+    Serial.println("[RL] already monitoring - factory reset ('reset') to relearn");
     return;
   }
   fs_.begin(nf_);
@@ -140,11 +140,17 @@ void TinyRLConditionMonitor::onWorldChange() {
 }
 
 void TinyRLConditionMonitor::onFeedbackNormal() {     // desensitise
-  float sd = sqrtf(fit_m2_ / (float)cfg::FIT_STEPS);
-  float cap = (sd > 0.01f) ? fit_mu_ + 10.0f * sd : theta_ * 3.0f;
-  theta_ = fminf(theta_ * 1.10f, cap);
+  // Operator says "this alarm is normal": theta must end ABOVE the score
+  // they just saw, or the alarm re-fires immediately. The old fit-stats
+  // cap (mu + 10*sd) was unreachable when sd came from 30 correlated
+  // fit samples (vib node: cap ~0.95 vs quiet pops to 1.3+ - the bench
+  // cycled alarm->normal 130 times, 2026-11-13). Repeated false alarms
+  // keep ratcheting +5% over the seen score: the operator controls it.
+  // No optimizer reset here: "nothing happened" is not a regime change,
+  // and resetting mid-quiet destabilised the net each cycle.
+  theta_ = fmaxf(theta_ * 1.10f, score_ * 1.05f);
   hi_ = lo_ = 0;
-  onWorldChange();
+  alarmed_ = false;
 }
 
 void TinyRLConditionMonitor::onFeedbackFault() {      // sharpen
@@ -236,9 +242,15 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
     return;                                     // no alarms while fitting
   }
 
-  // 5) threshold logic (MVP semantics, verbatim)
+  // 5) threshold logic (MVP semantics, one repair): the 0.7..1.0 theta
+  // band grants no alarm credit (anti-flap near theta), but it DOES count
+  // as quiet. With theta = mu + 4 sigma and mu dominating, 0.7*theta sits
+  // inside the quiet score distribution, so requiring 60 consecutive
+  // steps UNDER 0.7*theta made a self-clear structurally impossible -
+  // found by the interactive bench (2026-11-13): the score spends ~half
+  // its quiet steps in the band and the alarm latched forever.
   if (score_ > theta_)                 { hi_++; lo_ = 0; }
-  else if (score_ > 0.7f * theta_)     { hi_ = 0; lo_ = 0; }
+  else if (score_ > 0.7f * theta_)     { hi_ = 0; lo_++; }
   else                                 { lo_++; hi_ = 0; }
 
   if (!alarmed_ && hi_ >= cfg::ALARM_HI_N) {
