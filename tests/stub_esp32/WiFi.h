@@ -94,6 +94,12 @@ public:
   bool begin(bool = false) { return true; }
   bool exists(const char* p) { return files_.count(p) != 0; }
   bool remove(const char* p) { return files_.erase(p) > 0; }
+  // harness-side flash-usage report: bytes stored per file (the buffers
+  // are exactly what LittleFS would persist on ESP32-S3)
+  size_t fileSize(const char* p) {
+    auto it = files_.find(p);
+    return it == files_.end() ? 0 : it->second.size();
+  }
   File open(const char* p, const char* mode) {
     auto& slot = files_[p];
     if (mode[0] == 'r') {

@@ -293,10 +293,12 @@ class Bench:
 
     def export(self) -> str:
         # dump the current centroids (LIBC lines) so the figures can draw
-        # the multi-centroid condition space
-        self.send("K")
-        time.sleep(0.2)
-        self.pump()
+        # the multi-centroid condition space; skipped when the process
+        # already ended (the /export handler flushed it for [FLASH])
+        if not self.done:
+            self.send("K")
+            time.sleep(0.2)
+            self.pump()
         RUNS.mkdir(exist_ok=True)
         ts = time.strftime("%Y%m%d-%H%M%S")
         out = RUNS / f"run-{ts}.jsonl"
@@ -453,6 +455,19 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 self._send(400, "bad state", "text/plain")
         elif self.path == "/export":
+            # flush the bench process so the end-of-run state report
+            # (DONE + [FLASH] sizes) lands in the export; the library
+            # dump (K) must go FIRST, while the process is still alive
+            if not self.bench.done:
+                self.bench.send("K")
+                time.sleep(0.2)
+                self.bench.pump()
+                self.bench.send("q")
+                for _ in range(30):
+                    if self.bench.done:
+                        break
+                    self.bench.pump()
+                    time.sleep(0.05)
             self._send(200, json.dumps({"file": self.bench.export()}),
                        "application/json")
         else:

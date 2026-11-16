@@ -642,6 +642,16 @@ int main() {
   for (int i = 0; i < n_nodes; ++i)
     printf("DONE node=%d steps=%ld lib=%u pend=%u\n", i, rigs[i].last_step,
            rigs[i].app.libSize(), (unsigned)rigs[i].app.pendingSize());
+  // harness-side flash-state report: the stub stores byte-identical
+  // content to what LittleFS persists on ESP32-S3. NOTE: with n_nodes > 1
+  // the stub namespace is shared (last writer wins); single-node runs
+  // report exact per-node state.
+  for (int i = 0; i < n_nodes; ++i)
+    printf("[FLASH] node=%d model.bin=%zu net.bin=%zu "
+           "conditions.jsonl=%zu pending.jsonl=%zu\n", i,
+           LittleFS.fileSize("/model.bin"), LittleFS.fileSize("/net.bin"),
+           LittleFS.fileSize("/conditions.jsonl"),
+           LittleFS.fileSize("/pending.jsonl"));
   dump_libs();
   return 0;
 }
