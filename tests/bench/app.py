@@ -3,15 +3,16 @@
 
 Structure (the standard split - server, API, static frontend):
 
-  webbench/app.py            this file: Bench driver + HTTP server
-  webbench/static/           index.html + app.js + style.css (editable,
+  tests/bench/app.py         this file: Bench driver + HTTP server
+  tests/bench/static/        index.html + app.js + style.css (editable,
                              refreshed without restarting the server)
-  webbench/plot_run.py       publication figures from an exported run
-  interactive_bench.py       thin launcher (python3 tests/host-test/
-                             interactive_bench.py)
+  tests/bench/tools/         figure + metric tools for exported runs
+  tests/bench/scenarios/     headless scenario drivers (smoke, probes,
+                             the paper tour)
+  tests/bench/bench_server.py  thin launcher
 
 Sources: today the data source is the scripted host bench (N REAL
-SensorNodeApps on Arduino stubs, built from interactive_host.cpp). The
+SensorNodeApps on Arduino stubs, built from bench_host.cpp). The
 planned real-hardware source is USB serial: the node firmware will emit
 the SAME line protocol (S/EV lines, one per node per step) over serial,
 and SerialSource below replaces the subprocess - nothing else changes.
@@ -19,7 +20,7 @@ That firmware streaming mode is future work; --source serial fails with
 a clear message today.
 
 Run:
-    python3 tests/host-test/interactive_bench.py [--nodes 2]
+    python3 tests/bench/bench_server.py [--nodes 2]
             [--profile g100|vib] [--steps 900] [--port 8765] [--ci]
             [--source bench|serial]
 
@@ -30,7 +31,7 @@ API (used by the page, also curl-able):
                                 "kind": normal|fault (label only)}
     POST /control              {"cmd": run|continue, "seconds": n}
     POST /machine              {"ev": START|STOP|SPEED1..3|IMBALANCE|
-                                     LOOSE_MOUNT|PHASE_LOSS|NORMAL}
+                                     PHASE_LOSS|NORMAL}
     POST /export               writes runs/run-<ts>.jsonl, returns the path
 """
 import argparse
@@ -45,14 +46,14 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
-WEBBENCH = Path(__file__).resolve().parent
-HOSTTEST = WEBBENCH.parent
+ROOT = Path(__file__).resolve().parents[2]
+BENCH = Path(__file__).resolve().parent
+HOST = BENCH.parent / "host"
 STUBS = ROOT / "tests" / "stub_esp32"
 TINYRL = ROOT / "TinyRL"
 CORE = ROOT / "nodes" / "core"
-STATIC = WEBBENCH / "static"
-RUNS = WEBBENCH / "runs"
+STATIC = BENCH / "static"
+RUNS = BENCH / "runs"
 BIN = Path("/tmp/tinyrl_interactive")
 
 FEATURES = {
@@ -62,15 +63,15 @@ FEATURES = {
 }
 
 SRC_FILES = [
-    "stub_impl.cpp", "node_runtime.cpp", "uns_messaging.cpp", "console.cpp",
-    "tinyrl_monitor.cpp", "condition_library.cpp", "episode.cpp",
-    "persistence.cpp", "interactive_host.cpp",
+  "stub_impl.cpp", "node_runtime.cpp", "uns_messaging.cpp", "console.cpp",
+  "tinyrl_monitor.cpp", "condition_library.cpp", "episode.cpp",
+  "pending_store.cpp", "persistence.cpp", "bench_host.cpp",
 ]
 
 
 def build() -> None:
-    srcs = [STUBS / SRC_FILES[0]] + [CORE / f for f in SRC_FILES[1:8]] \
-        + [HOSTTEST / SRC_FILES[8]]
+    srcs = [STUBS / SRC_FILES[0]] + [CORE / f for f in SRC_FILES[1:9]] \
+        + [HOST / SRC_FILES[9]]
     newest = max(os.path.getmtime(p) for p in srcs)
     if BIN.exists() and os.path.getmtime(BIN) >= newest:
         return
@@ -85,9 +86,11 @@ def build() -> None:
 class Bench:
     """Drives the binary: pacing, parsing, ask/verdict/hold state."""
 
-    def __init__(self, profile, steps: int, nodes: int, autoagent: bool):
+    def __init__(self, profile, steps: int, nodes: int, autoagent: bool,
+                 mode: str = "two-way"):
         self.steps_total = steps
         self.n_nodes = nodes
+        self.mode = mode
         # no autoplay: sim time only moves when the user queues it (+5 s / +60 s)
         self.pace_left = 0            # sim seconds queued, not yet advanced
         self.pace_rate = 10.0         # sim seconds per wall second: visible
@@ -97,12 +100,15 @@ class Bench:
         self.sent = 0
         self.consumed = 0
         self.ask_serial = 0
+        self.ask_counted = [False] * nodes
         self.dismissed = -1
         self.verdict_count = 0
         self.done = False
         self.lock = threading.Lock()
         self.events = []
         self.rows = [[] for _ in range(nodes)]
+        self.pending = [[] for _ in range(nodes)]
+        self.libs = [[] for _ in range(nodes)]
         self.ask_serials = [-1] * nodes
         self.verdicts = [None] * nodes
         self.machine = "op_stopped"           # boot truth before META/M
@@ -142,6 +148,28 @@ class Bench:
                 self.q.put(("VERDICT", int(t[1]),
                             {"verdict": t[2],
                              "text": t[3] if len(t) > 3 else ""}))
+            elif line.startswith("PEND "):
+                t = line.split(maxsplit=2)
+                node = int(t[1])
+                parts = t[2].split("|") if len(t) > 2 else []
+                items = []
+                for tok in parts[1:]:
+                    p = tok.split("@")
+                    items.append({"id": p[0],
+                                  "step": int(p[1]) if len(p) > 1
+                                          and p[1] else 0,
+                                  "n": int(p[2]) if len(p) > 2
+                                       and p[2] else 0})
+                self.q.put(("PEND", node, items))
+            elif line.startswith("LIBC "):
+                t = line.split()
+                self.q.put(("LIBC", int(t[1]),
+                            {"slug": t[2], "kind": t[3],
+                             "c": [float(v) for v in t[4:]]}))
+            elif line.startswith("LIBU "):
+                t = line.split()
+                self.q.put(("LIBU", int(t[1]),
+                            {"slug": t[2], "u": [float(v) for v in t[3:]]}))
             elif line.startswith("DONE"):
                 self.q.put(("EV", 10 ** 9, line))
             elif line:
@@ -157,16 +185,32 @@ class Bench:
                     break
                 if kind == "S":
                     self.rows[node].append(payload)
-                    if payload["ep"] == 1 and payload["cond"] == "unknown" \
-                            and self.ask_serials[node] != self.ask_serial:
-                        self.ask_serial += 1
-                        self.ask_serials[node] = self.ask_serial
+                    if payload["ep"] == 1 and payload["cond"] == "unknown":
+                        # count a node's ask ONCE per unknown episode: the
+                        # old global check (ask_serials[node] != ask_serial)
+                        # re-fired on every row once ANY other node had
+                        # advanced the shared serial - the bench froze
+                        if not self.ask_counted[node]:
+                            self.ask_serial += 1
+                            self.ask_serials[node] = self.ask_serial
+                            self.ask_counted[node] = True
+                    else:
+                        self.ask_counted[node] = False
                 elif kind == "VERDICT":
                     self.verdict_count += 1
                     v = dict(payload)
                     v["step"] = max((r["step"] for r in self.rows[node]),
                                     default=0)
                     self.verdicts[node] = v
+                elif kind == "PEND":
+                    self.pending[node] = payload
+                elif kind == "LIBC":
+                    self.libs[node].append(payload)
+                elif kind == "LIBU":
+                    for entry in reversed(self.libs[node]):
+                        if entry["slug"] == payload["slug"]:
+                            entry["u"] = payload["u"]
+                            break
                 elif kind == "META":
                     t = payload.split()
                     self.steps_total = int(next(
@@ -207,10 +251,18 @@ class Bench:
             ask_nodes = [i for i, rows in enumerate(self.rows)
                          if rows and rows[-1]["ep"] == 1
                          and rows[-1]["cond"] == "unknown"]
-            holding = bool(ask_nodes) and self.ask_serial != self.dismissed
-            if holding:          # an ask freezes sim time; drop missed time
-                self._pace_carry = 0.0
-                return
+            if self.mode == "node-only":
+                # node-only baseline: asks never leave the node, so sim
+                # time must keep flowing (auto-dismiss every ask)
+                self.dismissed = self.ask_serial
+            else:
+                # per-ask dismissal: serials above the dismissed mark hold
+                holding = bool(ask_nodes) \
+                    and any(self.ask_serials[i] > self.dismissed
+                            for i in ask_nodes)
+                if holding:      # an ask freezes sim time; drop missed time
+                    self._pace_carry = 0.0
+                    return
             if self.pace_left <= 0:
                 return
             due = self.pace_rate * dt + self._pace_carry
@@ -224,10 +276,13 @@ class Bench:
             self.pace_left -= n
 
     def label(self, node: int, slug: str, action: str,
-              kind: str = "fault") -> None:
+              kind: str = "fault", batch: str = "") -> None:
         if action == "label":
-            j = json.dumps({"action": "label", "label": slug, "kind": kind,
-                            "by": "user"}, separators=(",", ":"))
+            d = {"action": "label", "label": slug, "kind": kind,
+                 "by": "user"}
+            if batch:
+                d["batch"] = batch
+            j = json.dumps(d, separators=(",", ":"))
         elif action == "fault":
             j = json.dumps({"action": "fault", "by": "user"},
                            separators=(",", ":"))
@@ -237,12 +292,19 @@ class Bench:
         self.send(f"L {node} {slug} {j}")
 
     def export(self) -> str:
+        # dump the current centroids (LIBC lines) so the figures can draw
+        # the multi-centroid condition space
+        self.send("K")
+        time.sleep(0.2)
+        self.pump()
         RUNS.mkdir(exist_ok=True)
         ts = time.strftime("%Y%m%d-%H%M%S")
         out = RUNS / f"run-{ts}.jsonl"
         with self.lock:
             with open(out, "w") as f:
                 meta = {"type": "meta", "steps_total": self.steps_total,
+                        "mode": self.mode,
+                        "verdicts": self.verdict_count,
                         "node_types": list(self.node_types or []),
                         "feature_names": {t: [n for n, _ in FEATURES[t]]
                                           for t in self.node_types or []},
@@ -255,6 +317,16 @@ class Bench:
                 for step, text in self.events:
                     f.write(json.dumps({"type": "EV", "step": step,
                                         "text": text}) + "\n")
+                for step, name in self.marks:
+                    f.write(json.dumps({"type": "MARK", "step": step,
+                                        "name": name}) + "\n")
+                for i, ids in enumerate(self.pending):
+                    f.write(json.dumps({"type": "PEND", "node": i,
+                                        "ids": ids}) + "\n")
+                for i, lib in enumerate(self.libs):
+                    for entry in lib:
+                        f.write(json.dumps({"type": "LIBC", "node": i,
+                                            **entry}) + "\n")
         return str(out)
 
     def snapshot(self) -> dict:
@@ -298,10 +370,12 @@ class Bench:
                 "machine": self.machine,
                 "context": self.context,
                 "marks": self.marks,
+                "pending": self.pending,
                 "playing": self.pace_left > 0,
                 "done": self.done,
                 "ask": ask,
-                "holding": bool(ask) and self.ask_serial != self.dismissed,
+                "holding": bool(ask) and self.ask_serial != self.dismissed
+                           and self.mode != "node-only",
                 "nodes": nodes,
                 "events": [list(e) for e in self.events[-15:]],
             }
@@ -351,7 +425,8 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/label":
             self.bench.label(int(body["node"]), str(body.get("slug", "")),
                              str(body.get("action", "label")),
-                             str(body.get("kind", "fault")))
+                             str(body.get("kind", "fault")),
+                             str(body.get("batch", "")))
             self._send(200, "ok", "text/plain")
         elif self.path == "/control":
             cmd = body.get("cmd")
@@ -360,11 +435,19 @@ class Handler(SimpleHTTPRequestHandler):
                                                    int(body.get("seconds", 5))))
             elif cmd == "continue":
                 self.bench.dismissed = self.bench.ask_serial
+            elif cmd == "learn":
+                self.bench.send("G")          # commission on the stopped machine
+            self._send(200, "ok", "text/plain")
+        elif self.path == "/discard":
+            j = json.dumps({"action": "discard",
+                            "batch": str(body.get("batch", ""))},
+                           separators=(",", ":"))
+            self.bench.send(f'L {int(body.get("node", 0))} - {j}')
             self._send(200, "ok", "text/plain")
         elif self.path == "/machine":
             ev = str(body.get("ev", ""))
             if ev in ("START", "STOP", "SPEED1", "SPEED2", "SPEED3",
-                      "IMBALANCE", "LOOSE_MOUNT", "PHASE_LOSS", "NORMAL"):
+                      "IMBALANCE", "PHASE_LOSS", "NORMAL"):
                 self.bench.send(f"F {ev}")
                 self._send(200, "ok", "text/plain")
             else:
@@ -395,12 +478,16 @@ def main() -> None:
                          "mode is future work)")
     ap.add_argument("--ci", action="store_true",
                     help="headless smoke test: scripted agent answers asks")
+    ap.add_argument("--mode", choices=["two-way", "node-only"],
+                    default="two-way",
+                    help="node-only baseline: asks never leave the node, "
+                         "no agent, no labels")
     args = ap.parse_args()
 
     if args.source == "serial":
         print("serial source is not implemented yet: the node firmware "
               "needs a USB streaming mode that emits the same S-line "
-              "protocol (see webbench/app.py docstring)", file=sys.stderr)
+              "protocol (see tests/bench/app.py docstring)", file=sys.stderr)
         return
 
     build()
@@ -427,7 +514,7 @@ def main() -> None:
         return
 
     bench = Bench(args.profile if args.nodes == 1 else None,
-                  args.steps, args.nodes, autoagent=False)
+                  args.steps, args.nodes, autoagent=False, mode=args.mode)
     stop = threading.Event()
     threading.Thread(target=pacer, args=(bench, stop), daemon=True).start()
     Handler.bench = bench

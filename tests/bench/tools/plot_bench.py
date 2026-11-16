@@ -2,10 +2,10 @@
 """Turn host-bench logs into the RESEARCH.md figures (matplotlib).
 
 Usage:
-    python3 tests/host-test/plot_bench.py [TRACE_LOG] [BENCH_LOG] [--outdir DIR]
+    python3 tests/bench/tools/plot_bench.py [TRACE_LOG] [BENCH_LOG] [--outdir DIR]
 
 Defaults: /tmp/trace.log, /tmp/bench.log, --outdir assets. Generate the logs
-(after one `bash tests/host-test.sh` so the binaries exist):
+(after one `bash tests/run_tests.sh` so the binaries exist):
 
     TINYRL_TRACE=1 /tmp/tinyrl_test_host > /tmp/trace.log
     TINYRL_LONGRUN=100000 /tmp/tinyrl_test_host > /tmp/bench.log
@@ -22,7 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUT = ROOT / "assets"
 
 BLUE, RED, ORANGE, GREEN, MUTED, INK = ("#1f77b4", "#d62728", "#ff7f0e",

@@ -19,14 +19,14 @@ async function post(path, body) {
   return r;
 }
 
-function label(node, slug, action, kind) {
-  post("/label", {node, slug, action, kind: kind || "fault"});
+function label(node, slug, action, kind, batch) {
+  post("/label", {node, slug, action, kind: kind || "fault",
+                  batch: batch || ""});
 }
+function discard(node, batch) { post("/discard", {node, batch}); }
 function inject(ev) { post("/machine", {ev}); }
 
-const PREFILL = {unconfirmed: "imbalance", corroborated: "phase_loss",
-                 known: "imbalance", unconsulted: "imbalance"};
-const FAULT_STATES = ["imbalance", "loose_mount", "phase_loss"];
+const FAULT_STATES = ["imbalance", "phase_loss"];
 const WHY = {
   known: "a sibling library already knows this condition",
   corroborated: "a sibling node is ALARMING at the same time - likely a real fault",
@@ -35,21 +35,19 @@ const WHY = {
   unconsulted: "no sibling evidence available (single node or not ready)",
 };
 
-// faults are labelled WITH their operating point (compound slug:
-// imbalance@op_speed_1) so the same fault at different speeds is a
-// different library condition; normal-condition asks prefill with the
-// machine truth itself
-function prefillFor(st) {
-  if (FAULT_STATES.includes(st.machine)) {
-    const v = (st.ask[0].verdict || {}).verdict || "unconfirmed";
-    return `${PREFILL[v] || "imbalance"}@${st.context}`;
-  }
-  return st.machine;
+// condition vocabulary (2026-11-15): normals are op_stopped / speed_1 /
+// speed_2, faults compound with the running setpoint (speed_1_imbalance)
+function truthSlug(st) {
+  if (FAULT_STATES.includes(st.machine))
+    return st.context.replace(/^op_/, "") + "_" + st.machine;
+  return st.machine === "op_stopped" ? "op_stopped"
+                                     : st.machine.replace(/^op_/, "");
 }
 
 // ONE popup for every pending ask: one label resolves all of them (the
-// collective shares it - sibling episodes get the slug applied to their
-// own episode means)
+// collective shares it - each node relabels its own episode and consumes
+// its own stored batch). The label lands on the asked node's STORED batch
+// when one exists (settled data, works late); otherwise the live episode.
 function askPanelHTML(st) {
   const lines = st.ask.map(a => {
     const v = a.verdict || {verdict: "unconsulted", text: ""};
@@ -58,14 +56,31 @@ function askPanelHTML(st) {
   }).join(" &nbsp;|&nbsp; ");
   const n0 = st.ask[0].node;
   const why = WHY[(st.ask[0].verdict || {}).verdict] || "";
+  const pb = (st.pending[n0] || [])[0];
+  const bid = pb ? pb.id : "";
+  const via = bid
+    ? `batch <b>${bid}</b> (n=${pb.n} settled samples)`
+    : `the live episode (no stored batch yet)`;
   return `<b>${st.ask.length} node(s) opened an UNKNOWN condition</b> - ${lines}` +
     `<br>${why}` +
-    `<br>one label resolves every pending ask: ` +
-    `<input id="askslug" value="${prefillFor(st)}" size="26"> ` +
-    `<button onclick="label(${n0},document.getElementById('askslug').value,'label','normal')">label as normal</button>` +
-    `<button onclick="label(${n0},document.getElementById('askslug').value,'label','fault')">label as fault</button>` +
+    `<br>one label resolves every pending ask via ${via}: ` +
+    `<input id="askslug" value="${truthSlug(st)}" size="26"> ` +
+    `<button onclick="label(${n0},document.getElementById('askslug').value,'label','normal','${bid}')">label as normal</button>` +
+    `<button onclick="label(${n0},document.getElementById('askslug').value,'label','fault','${bid}')">label as fault</button>` +
     `<button class="warn" onclick="label(${n0},'','normal')">false alarm (no name)</button>` +
     `<button class="grey" onclick="post('/control',{cmd:'continue'})">continue without answering</button>`;
+}
+
+// pending batches on a node card: label or discard BY ID (late labels
+// are the point of the pending store)
+function pendHTML(st, node) {
+  const pb = st.pending[node] || [];
+  if (!pb.length) return "";
+  return "<br>pending: " + pb.map(b =>
+    `${b.id} (n=${b.n}) ` +
+    `<button class="grey" onclick="label(${node},prompt('label for ${b.id}'), 'label','fault','${b.id}')">label</button>` +
+    `<button class="warn" onclick="discard(${node},'${b.id}')">discard</button>`
+  ).join(" ");
 }
 
 async function poll() {
@@ -77,7 +92,7 @@ async function poll() {
 
   const m = $("m_state");
   m.textContent = st.machine;
-  m.className = ["imbalance", "loose_mount", "phase_loss"].includes(st.machine)
+  m.className = ["imbalance", "phase_loss"].includes(st.machine)
     ? "m-fault" : "m-normal";
 
   const ask = $("ask");
@@ -97,6 +112,7 @@ async function poll() {
     n.feat.map((v, k) =>
       `${n.feature_names[k]}=${v.toPrecision(4)}${n.feature_units[k]}`)
       .join(" | ") +
+    pendHTML(st, n.id) +
     `</div>`).join("");
 
   if (typeof Chart === "undefined") {
@@ -189,6 +205,7 @@ function updateCharts(i, n) {
   c.feat.update("none");
 }
 
+$("b_learn").onclick = () => post("/control", {cmd: "learn"});
 $("b_run5").onclick = () => post("/control", {cmd: "run", seconds: 5});
 $("b_run60").onclick = () => post("/control", {cmd: "run", seconds: 60});
 $("b_export").onclick = async () => {

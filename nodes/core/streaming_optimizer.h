@@ -52,6 +52,9 @@ public:
         for (auto* param : parameters_) param->zero_grad();
     }
 
+    // novelty-modulated rate (2026-11-15): the monitor rescales lr per step
+    void set_lr(ag::Float lr) { lr_ = lr; }
+
     void step(ag::Float delta, const bool reset) {
         for (size_t i = 0; i < parameters_.size(); ++i) {
             ag::Float* z = etraces_[i].data();

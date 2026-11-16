@@ -99,25 +99,37 @@ the next build. Each node keeps its own `/model.bin`, `/net.bin`,
   `condition_id` idle|learning|normal|<label>|**unknown**, `confidence`.
 - `…/State/event` (per transition): open/close/label + `summary` +
   `meas:{feature:value,...}`. An `open` with `condition_id:"unknown"` is
-  the node's implicit ASK — answer on `Action/feedback`:
-  - `{"action":"label","label":"belt_slip","by":"agent-01"}`
+  the node's implicit ASK - the settled state is also stored as a pending
+  batch (id `P0001...`, survives reboots, console `p` lists them). Answer
+  on `Action/feedback`:
+  - `{"action":"label","label":"belt_slip","by":"agent-01","batch":"P0001"}`
+    (label the STORED batch; late labels work, the episode relabels too).
+    Omit `batch` to label the live episode directly.
+  - `{"action":"discard","batch":"P0001"}` (drop the batch, model untouched).
   - `{"action":"normal"}` (false alarm → theta +10%), `{"action":"fault"}` (−5%),
-  - `{"action":"start"}` (begin learning; machine at NORMAL load).
+  - `{"action":"start"}` (begin learning; machine STOPPED - the CAL baseline
+    auto-registers as the `op_stopped` normal condition).
 - `…/State/node_info` (retained, on connect): discovery doc for the agent.
 
-Console (unchanged): `s` start learning · `r` poll now · `l` library ·
-`f <label> [normal|fault]` · `L` factory reset · `m` status (adds step/score/
-theta/params/heap).
+Console: `s` start learning · `r` poll now · `l` library · `p` pending
+batches · `f <label> [normal|fault]` · `m` status (adds
+step/score/theta/params/heap) · `reset` factory reset (typed in full; was
+single-key `L`).
 
 ## Life cycle
 
-boot → restore `model.bin` + `net.bin` + `conditions.jsonl`
+boot → restore `model.bin` + `net.bin` + `conditions.jsonl` + `pending.jsonl`
 → theta ready ⇒ straight back to monitoring (no relearning)
-→ fresh ⇒ IDLE until `s` / `{"action":"start"}` → ~5 min CAL (ranges) →
-~2 min theta fit (network trains on the stream the whole time) →
-monitoring: alarm ⇒ episode opens ⇒ known ⇒ labelled at once, unknown ⇒
-ask ⇒ label ⇒ recognised on-device forever (centroid refined by EMA on
-every confirmed close). Reboot mid-learning: CAL restarts automatically
+→ fresh ⇒ IDLE until `s` / `{"action":"start"}` (machine STOPPED) →
+~30 s CAL (ranges; baseline auto-registers as `op_stopped`) →
+~30 s theta fit (network trains on the stream the whole time) →
+monitoring: the settle gate holds decisions off during transitions
+(no train / alarm / ask mid-motion); on a settled state an alarm opens an
+episode ⇒ known ⇒ labelled at once, unknown ⇒ the batch is stored (`p`)
+and the node asks ⇒ label or discard by id (late labels fine) ⇒ recognised
+on-device forever (the net trains on every settled step of LABELED
+conditions; unknown regimes never train, so a novel condition keeps
+alarming until named). Reboot mid-learning: CAL restarts automatically
 (improvement over MVP's "press 's' again").
 
 ## Build & verify
@@ -129,7 +141,7 @@ pio run -e vfd_g100_node -t upload && pio device monitor
 
 Host-side verification (no hardware) — this rewrite was validated by
 compiling every module against the real TinyRL headers with Arduino stubs
-and running a full simulation (`scripts/test_host.cpp`, 900 steps):
+and running a full simulation (`tests/host-test/test_host.cpp`):
 
 - CAL freezes ranges → theta fit → `theta=0.35` on the synthetic stream
 - 200 quiet steps: **no false alarm**
@@ -137,7 +149,7 @@ and running a full simulation (`scripts/test_host.cpp`, 900 steps):
 - `model.bin`+`net.bin` round-trip: restored node reproduces the score
   (89.06 vs 89.13) and matches theta exactly
 - condition label → save → reload → **anomaly matched, normal rejected**
-- console `s/m/l/f` paths exercised end-to-end on the linked binary
+- console `s/m/l/f/reset` paths exercised end-to-end on the linked binary
 
 ## Migration notes
 

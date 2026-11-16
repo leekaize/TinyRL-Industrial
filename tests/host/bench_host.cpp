@@ -1,5 +1,5 @@
 // =====================================================================
-// interactive_host.cpp -- multi-node host run for the web bench.
+// bench_host.cpp -- multi-node host run for the web bench.
 // N REAL SensorNodeApps (Arduino stubs) watching ONE simulated motor:
 // the user drives the machine state from the web panel, and each node
 // renders the CURRENT state through its own modality:
@@ -28,7 +28,7 @@
 // Stdin protocol (the web server is the pacing brain):
 //   s                       advance every node by ONE monitor step (1 s)
 //   F <CMD>                 drive the machine: START|STOP|SPEED1|SPEED2|
-//                           IMBALANCE|LOOSE_MOUNT|PHASE_LOSS|NORMAL
+//                           IMBALANCE|PHASE_LOSS|NORMAL
 //   L <idx> <slug> <json>   applyFeedback(json) on node idx + sharing
 //   q                       quit
 // Per monitor step: one state line PER node:
@@ -75,7 +75,8 @@ static constexpr FeatureProfile PROF_VIB = {"vib_adxl", 6, FEATS_VIB};
 // Model: running on/off, a speed setpoint, an optional fault overlay.
 // Three normal conditions only (user decision 2026-11-14):
 //   op_stopped (idle), op_speed_1 (5 Hz), op_speed_2 (20 Hz)
-//   faults:            imbalance, loose_mount, phase_loss (VFD -> motor)
+//   faults:            imbalance (mechanical), phase_loss (VFD -> motor)
+//                      (user decision 2026-11-15: two fault types)
 // Fault asks are labelled WITH their operating point (compound slug,
 // e.g. imbalance@op_speed_1): faults under different setpoints are
 // different library conditions.
@@ -84,8 +85,8 @@ static constexpr FeatureProfile PROF_VIB = {"vib_adxl", 6, FEATS_VIB};
 // directly (user fact: no motor feedback needed) - it steps instantly and
 // reads 0 while stopped. Drive slip is gone from the feature set.
 static constexpr float SP_HZ[2] = {5.0f, 20.0f};
-enum Ev { STOPPED, SPEED1, SPEED2, IMBALANCE, LOOSE_MOUNT, PHASE_LOSS };
-enum Fk { FK_NONE, FK_IMB, FK_MOUNT, FK_PHASE };
+enum Ev { STOPPED, SPEED1, SPEED2, IMBALANCE, PHASE_LOSS };
+enum Fk { FK_NONE, FK_IMB, FK_PHASE };
 
 static bool machine_running = false;   // boots NOT RUNNING
 static int  machine_sp = 0;            // SP_HZ index
@@ -100,7 +101,6 @@ static const char* truth_name() {
   if (!machine_running) return "op_stopped";
   switch (machine_fk) {
     case FK_IMB:   return "imbalance";
-    case FK_MOUNT: return "loose_mount";
     case FK_PHASE: return "phase_loss";
     default: break;
   }
@@ -132,10 +132,17 @@ public:
   // scripted-truth hint for the CI agent = machine truth + operating point
   // (faults are labelled as compound slugs: imbalance@op_speed_1, ...)
   const char* anomalyLabel() {
+    // condition vocabulary (user decision 2026-11-15): normals are
+    // op_stopped / speed_1 / speed_2; faults compound as
+    // speed_1_imbalance etc. (context comes from the running setpoint)
     const char* t = truth_name();
-    if (machine_fk == FK_NONE) return t;
-    snprintf(label_buf_, sizeof(label_buf_), "%s@%s", t, truth_ctx());
-    return label_buf_;
+    if (machine_fk == FK_NONE) {
+      if (strncmp(t, "op_", 3) == 0) return t;    // op_stopped
+      snprintf(label_buf_, sizeof(label_buf_), "%s", t + 3);
+      return label_buf_;                          // speed_1 / speed_2
+    }
+    snprintf(label_buf_, sizeof(label_buf_), "%s_%s", truth_ctx() + 3, t);
+    return label_buf_;                            // speed_1_imbalance ...
   }
 
   // polls so far; lets the host advance time through idle phases
@@ -191,7 +198,6 @@ private:
     }
     switch (machine_fk) {
       case FK_IMB: i += 0.05f; tq += 1.2f; break;          // barely notices
-      case FK_MOUNT: i += 0.10f; tq += 2.0f; ntq = 4.5f; break;
       case FK_PHASE: i = i * 1.30f; tq -= 12.0f;
                      vdc -= 3.0f; ni = 0.12f; nvdc = 2.5f; break;
       default: break;
@@ -213,7 +219,6 @@ private:
     float rms = f_out_ > 0.5f ? 0.005f + 0.0048f * f_mech : 0.004f;
     switch (machine_fk) {
       case FK_IMB: rms *= 1.5f; break;
-      case FK_MOUNT: rms *= 1.2f; break;
       case FK_PHASE: rms *= 1.3f; break;
       default: break;
     }
@@ -225,12 +230,6 @@ private:
     for (int k = 0; k < 4; k++) b[k] += 0.07f * r2;   // broadband floor
     switch (machine_fk) {
       case FK_IMB: add_tone(f_mech, 0.90f * r2, b); break;      // 1x dominates
-      case FK_MOUNT:            // broadband rattle + running-speed harmonics
-        for (int k = 0; k < 4; k++) b[k] += 0.30f * r2;
-        add_tone(2 * f_mech, 0.30f * r2, b);
-        add_tone(3 * f_mech, 0.25f * r2, b);
-        add_tone(4 * f_mech, 0.15f * r2, b);
-        break;
       case FK_PHASE:                                            // 2x electrical
         add_tone(2.0f * f_out_, 0.85f * r2, b);
         break;
@@ -264,6 +263,7 @@ struct Rig {
   // scripted-agent state (CI mode only)
   int  ask_age = 0;
   bool asked = false;
+  char pend_sig[256] = "";     // last reported pending state (PEND lines)
 };
 
 static Rig rigs[8];
@@ -271,6 +271,8 @@ static int n_nodes = 2;
 
 static void print_state();
 static void set_machine(const char* name);
+static void learn_all();
+static void dump_libs();
 
 // scripted agent (CI mode): answer an ask 3 steps after it opens, using
 // the machine truth as the label hint.
@@ -282,25 +284,43 @@ static void autoagent(Rig& r, int idx) {
   if (strcmp(r.app.conditionId(), "unknown") == 0) {
     if (r.ask_age >= 3 && !r.asked) {
       const char* lb = r.sensor.anomalyLabel();
-      // truth conditions starting op_ are NORMAL operating points; the
-      // rest are faults - the kind rides with the label (B-rule)
-      const char* kd = (lb && strncmp(lb, "op_", 3) == 0) ? "normal" : "fault";
-      char j[128];
+      // the kind rides with the label (B-rule): normals are the three
+      // operating points, everything else is a fault
+      const char* kd = (lb && (strcmp(lb, "op_stopped") == 0
+                               || strcmp(lb, "speed_1") == 0
+                               || strcmp(lb, "speed_2") == 0))
+                           ? "normal" : "fault";
+      char j[160];
       if (lb) {
+        // the agent labels the STORED batch (2026-11-15 workflow), not
+        // the live episode, so the pending store stays consistent
+        char bid[12] = "";
+        if (r.app.pendingSize() > 0)
+          r.app.pendingAt(0, bid, sizeof(bid), nullptr, nullptr);
         snprintf(j, sizeof(j),
                  "{\"action\":\"label\",\"label\":\"%s\","
-                 "\"kind\":\"%s\",\"by\":\"agent\"}", lb, kd);
+                 "\"kind\":\"%s\",\"by\":\"agent\",\"batch\":\"%s\"}",
+                 lb, kd, bid);
       } else {
         snprintf(j, sizeof(j), "{\"action\":\"normal\",\"by\":\"agent\"}");
       }
       r.app.applyFeedback(j);
       r.asked = true;
-      // CI sharing: sibling with an open unknown ask gets the same slug
+      // CI sharing: sibling with an open unknown ask gets the same slug,
+      // but ITS OWN batch id (ids are per node - never cross nodes)
       for (int k = 0; k < n_nodes; ++k) {
         if (k == idx) continue;
         if (rigs[k].app.episodeOpen()
             && strcmp(rigs[k].app.conditionId(), "unknown") == 0) {
-          rigs[k].app.applyFeedback(j);
+          char bid2[12] = "";
+          if (rigs[k].app.pendingSize() > 0)
+            rigs[k].app.pendingAt(0, bid2, sizeof(bid2), nullptr, nullptr);
+          char j2[160];
+          snprintf(j2, sizeof(j2),
+                   "{\"action\":\"label\",\"label\":\"%s\","
+                   "\"kind\":\"%s\",\"by\":\"agent\",\"batch\":\"%s\"}",
+                   lb, kd, bid2);
+          rigs[k].app.applyFeedback(j2);
           printf("[SHARE] '%s' -> node %d (corroborated ask)\n", lb, k);
         }
       }
@@ -383,18 +403,19 @@ static void print_state() {
 }
 
 static void step_all(bool autoagent_on) {
-  // CI self-injection: the timetable stands in for a human at the panel
-  // (learn on a running motor, exercise stop/start, then three faults)
   if (autoagent_on) {
+    // CI self-injection: the timetable stands in for a human at the panel
+    // (learn on the STOPPED machine, then exercise stop/start + faults)
     static const struct { long at; const char* cmd; } inj[] = {
-      {40, "START"}, {160, "STOP"}, {200, "START"},
-      {300, "IMBALANCE"}, {330, "NORMAL"},
-      {480, "LOOSE_MOUNT"}, {510, "NORMAL"},
-      {660, "PHASE_LOSS"}, {690, "NORMAL"},
+      {5, "LEARN"}, {120, "START"}, {200, "STOP"}, {240, "START"},
+      {300, "IMBALANCE"}, {400, "NORMAL"},
+      {500, "PHASE_LOSS"}, {600, "NORMAL"},
     };
     static int inj_idx = 0;
-    if (inj_idx < 9 && rigs[0].last_step >= inj[inj_idx].at) {
-      set_machine(inj[inj_idx].cmd);
+    if (inj_idx < (int)(sizeof(inj) / sizeof(inj[0]))
+        && rigs[0].last_step >= inj[inj_idx].at) {
+      if (strcmp(inj[inj_idx].cmd, "LEARN") == 0) learn_all();
+      else set_machine(inj[inj_idx].cmd);
       inj_idx++;
     }
   }
@@ -413,6 +434,25 @@ static void step_all(bool autoagent_on) {
   }
   print_state();
   for (int i = 0; i < n_nodes; ++i) {
+    // PEND on ANY change (count, per-batch step or n): the driver's
+    // oracle labels by accumulated sample count, so growth must surface
+    char sig[256];
+    size_t o = 0;
+    int pc = (int)rigs[i].app.pendingSize();
+    o += snprintf(sig + o, sizeof(sig) - o, "%d", pc);
+    for (int k = 0; k < pc; ++k) {
+      char id[12];
+      uint32_t pn, ps;
+      if (rigs[i].app.pendingAt(k, id, sizeof(id), &pn, &ps))
+        o += snprintf(sig + o, sizeof(sig) - o, "|%s@%lu@%lu",
+                      id, (unsigned long)ps, (unsigned long)pn);
+    }
+    if (strcmp(sig, rigs[i].pend_sig) != 0) {
+      printf("PEND %d %s\n", i, sig);
+      snprintf(rigs[i].pend_sig, sizeof(rigs[i].pend_sig), "%s", sig);
+    }
+  }
+  for (int i = 0; i < n_nodes; ++i) {
     if (rigs[i].app.episodeOpen()
         && strcmp(rigs[i].app.conditionId(), "unknown") == 0) {
       if (!rigs[i].consulted) consult(i);
@@ -422,16 +462,44 @@ static void step_all(bool autoagent_on) {
   }
 }
 
+// learn command: commission on the STOPPED machine (2026-11-15)
+static void learn_all() {
+  for (int i = 0; i < n_nodes; ++i)
+    if (strcmp(rigs[i].app.phase(), "idle") == 0)
+      rigs[i].app.startLearning();
+  printf("[MACHINE] learn requested (machine %s at %s)\n",
+         truth_name(), truth_ctx());
+}
+
+// library dump for the report figures (centroid lines in the condition
+// space); 'K' on demand, also printed after DONE. LIBU carries each
+// condition's own matching units so the diag can check the radii.
+static void dump_libs() {
+  for (int i = 0; i < n_nodes; ++i) {
+    for (int k = 0; k < (int)rigs[i].app.libSize(); ++k) {
+      float c[8];
+      CondKind kind;
+      if (!rigs[i].app.libCentroid(k, c, &kind)) continue;
+      printf("LIBC %d %s %s", i, rigs[i].app.libName(k),
+             kind == COND_NORMAL ? "normal" : "fault");
+      for (int f = 0; f < rigs[i].sensor.profile().n_features; ++f)
+        printf(" %.4f", c[f]);
+      printf("\n");
+      printf("LIBU %d %s", i, rigs[i].app.libName(k));
+      for (int f = 0; f < rigs[i].sensor.profile().n_features; ++f)
+        printf(" %.4f", rigs[i].app.libUnit(k, f));
+      printf("\n");
+    }
+  }
+}
+
 // user commands from the web panel (F protocol); pushes to every sensor
 static void set_machine(const char* name) {
   if (strcmp(name, "START") == 0) {
     machine_running = true;
-    // learning gate: nodes calibrate on the LIVE running motor, never on
-    // a stopped one. Safe to call again: theta-ready nodes just print a
-    // hint; the typed console 'reset' stays the factory-reset path.
-    for (int i = 0; i < n_nodes; ++i)
-      if (strcmp(rigs[i].app.phase(), "idle") == 0)
-        rigs[i].app.startLearning();
+    // learning gate REMOVED (2026-11-15): commissioning happens on the
+    // STOPPED machine via 'G' (learn_all), so the baseline condition is
+    // the stopped state (user decision)
   } else if (strcmp(name, "STOP") == 0) {
     machine_running = false;
   } else if (strcmp(name, "SPEED1") == 0) {
@@ -440,8 +508,6 @@ static void set_machine(const char* name) {
     machine_sp = 1;
   } else if (strcmp(name, "IMBALANCE") == 0) {
     machine_fk = FK_IMB;
-  } else if (strcmp(name, "LOOSE_MOUNT") == 0) {
-    machine_fk = FK_MOUNT;
   } else if (strcmp(name, "PHASE_LOSS") == 0) {
     machine_fk = FK_PHASE;
   } else if (strcmp(name, "NORMAL") == 0) {
@@ -458,23 +524,33 @@ static void set_machine(const char* name) {
 static void do_label(int idx, const char* slug, const char* json) {
   bool open = rigs[idx].app.episodeOpen();
   rigs[idx].app.applyFeedback(json);
-  if (!open) { print_state(); return; }
+  // only LABEL actions share to siblings; discard/batch-foreign commands
+  // must never turn into sibling labels (a '-' slug would learn garbage)
+  bool is_label = strstr(json, "\"action\":\"label\"") != nullptr;
+  if (!open || !is_label) { print_state(); return; }
   for (int j = 0; j < n_nodes; ++j) {
     if (j == idx) continue;
     // a sibling stuck in the SAME unknown ask (corroborated) gets the
-    // slug applied to its own episode: one label, each node learns from
-    // its own means
+    // slug applied to its own episode, WITHOUT the asker's batch id:
+    // ids are per node, and each node learns from its own means
     if (rigs[j].app.episodeOpen()
         && strcmp(rigs[j].app.conditionId(), "unknown") == 0) {
-      rigs[j].app.applyFeedback(json);
+      CondKind k = strstr(json, "\"kind\":\"normal\"") ? COND_NORMAL
+                                                       : COND_FAULT;
+      char j2[128];
+      snprintf(j2, sizeof(j2),
+               "{\"action\":\"label\",\"label\":\"%s\",\"kind\":\"%s\","
+               "\"by\":\"user\"}",
+               slug, k == COND_NORMAL ? "normal" : "fault");
+      rigs[j].app.applyFeedback(j2);
       printf("[SHARE] '%s' -> node %d (corroborated ask)\n", slug, j);
       continue;
     }
     // same-profile sibling: share the asking node's episode means as a
     // centroid mapped through the sibling's own frozen space; the kind
     // travels with the slug (parsed from the label JSON)
-    if (&rigs[j].sensor.profile() == &rigs[idx].sensor.profile()
-        && slug[0]) {
+    if (slug[0] &&
+        &rigs[j].sensor.profile() == &rigs[idx].sensor.profile()) {
       float means[8];
       rigs[idx].app.episodeMeans(means);
       CondKind k = strstr(json, "\"kind\":\"normal\"") ? COND_NORMAL
@@ -542,6 +618,10 @@ int main() {
     if (n && line[n - 1] == '\n') line[n - 1] = 0;
     if (line[0] == 's') {
       step_all(autoagent_on);
+    } else if (line[0] == 'G') {
+      learn_all();
+    } else if (line[0] == 'K') {
+      dump_libs();
     } else if (line[0] == 'F') {
       set_machine(line + 2);
     } else if (line[0] == 'L') {
@@ -560,7 +640,8 @@ int main() {
   }
 
   for (int i = 0; i < n_nodes; ++i)
-    printf("DONE node=%d steps=%ld lib=%u\n", i, rigs[i].last_step,
-           rigs[i].app.libSize());
+    printf("DONE node=%d steps=%ld lib=%u pend=%u\n", i, rigs[i].last_step,
+           rigs[i].app.libSize(), (unsigned)rigs[i].app.pendingSize());
+  dump_libs();
   return 0;
 }

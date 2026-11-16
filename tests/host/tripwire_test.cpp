@@ -1,5 +1,5 @@
 // =====================================================================
-// tripcheck.cpp -- behavioral check of the quiet-unmatched tripwire
+// tripwire_test.cpp -- behavioral check of the quiet-unmatched tripwire
 // (Settles 2012 ch. 2.5 myopia counter, RESEARCH.md design decisions)
 // running on the REAL SensorNodeApp core with a fake ISensorNode
 // (no Modbus) and the stub WiFi/MQTT/LittleFS.
@@ -9,11 +9,14 @@
 //   0) console 's': CAL + FIT at NORMAL (full sensor noise) -> theta
 //   1) step to L1 = NORMAL + 3 sigma (smooth, fault-like): z-jump alarms
 //      -> console 'f belt_slip' -> library = 1, centroid at L1
-//   2) stay at L1: net adapts, alarm clears, quiet steps MATCH the
-//      centroid (distance ~ noise only) -> tripwire silent (qum=0)
-//   3) step to L2 = NORMAL - 3 sigma (smooth): alarms, adapts, clears;
-//      quiet steps sit ~0.87 from the centroid in 0..1 space -> no match
-//      within r=0.30 -> report line fires, qum climbs
+//   2) stay at L1: the net trains on the LABELED fault regime (2026-11-15
+//      policy), adapts, alarm clears, quiet steps MATCH the centroid
+//      (distance ~ noise only) -> tripwire silent (qum=0)
+//   3) step to L2 = NORMAL - 3 sigma (smooth): matches NOTHING -> the
+//      net NEVER trains on the unknown regime, so it never adapts and
+//      the alarm never clears (2026-11-15 policy: a novel condition
+//      keeps alarming until it is named). The tripwire stays silent:
+//      an alarmed plateau is not quiet-unmatched.
 // Local log only; nothing published, no asks.
 //
 // Serial/stdout is redirected to a temp log and scanned between PHASE
@@ -48,7 +51,7 @@ public:
   uint32_t failCount() const override { return fails_; }
   const FeatureProfile& profile() const override { return PROF; }
   void features(float* out) const override {
-    // noise scales x4 vs test_host.cpp so 3-sigma level steps stay in the
+    // noise scales x4 vs sim_test.cpp so 3-sigma level steps stay in the
     // range the bounded optimizer can track in test-wall time
     static const float scale[4] = {0.2f, 0.12f, 4.0f, 6.0f};
     for (int f = 0; f < 4; ++f) out[f] = cur[f] + noise(scale[f] * nscale);
@@ -60,7 +63,7 @@ public:
   }
 
 private:
-  // deterministic LCG noise (test_host.cpp pattern)
+  // deterministic LCG noise (sim_test.cpp pattern)
   mutable unsigned long lcg_ = 12345;
   float noise(float scale) const {
     lcg_ = lcg_ * 1664525u + 1013904223u;
@@ -86,7 +89,7 @@ static void runFeeds(SensorNodeApp& app, FakeSensor& s, long n) {
 
 int main() {
   // capture the app's console output for segment scanning
-  FILE* cap = freopen("/tmp/tinyrl_tripcheck.log", "w", stdout);
+  FILE* cap = freopen("/tmp/tinyrl_tripwire.log", "w", stdout);
   assert(cap);
 
   FakeSensor sensor;
@@ -111,8 +114,8 @@ int main() {
   Serial.feed("f belt_slip\n");
   app.tick();                                    // library -> 1 condition
 
-  // ---- stay at lvHi: adapt, clear, quiet steps MATCH centroid ----------
-  runFeeds(app, sensor, 5000);
+  // ---- stay at lvHi: train on the labeled regime, adapt, clear ---------
+  runFeeds(app, sensor, 20000);
   Serial.feed("m\n");
   app.tick();
   fprintf(stdout, "\nPHASE2\n");
@@ -126,7 +129,7 @@ int main() {
   // ---- scan the app's own output ---------------------------------------
   fflush(stdout);
   fclose(stdout);
-  FILE* f = fopen("/tmp/tinyrl_tripcheck.log", "r");
+  FILE* f = fopen("/tmp/tinyrl_tripwire.log", "r");
   assert(f);
   std::string log;
   char buf[4096];
@@ -143,14 +146,17 @@ int main() {
   assert(ph1.find("learning STARTED") != std::string::npos);
   assert(ph1.find("[RL] ALARM") != std::string::npos);
   assert(ph1.find("learned new condition 'belt_slip'") != std::string::npos);
-  // phase 1: matched quiet steps leave the counter at zero
+  // phase 1: the net trains on the labeled regime, surprise falls, the
+  // alarm clears, matched quiet steps leave the counter at zero
+  assert(ph1.find("[RL] clear") != std::string::npos);
   assert(ph1.find("quiet-unmatched=") == std::string::npos);
-  assert(ph1.find("qum=0") != std::string::npos);
-  // phase 2: unmatched quiet steps trip the counter and its report line
-  assert(ph2.find("quiet-unmatched=") != std::string::npos);
-  assert(ph2.find("qum=0") == std::string::npos);
+  // phase 2 (2026-11-15 policy): the unknown regime never trains, never
+  // adapts, never clears - it stays alarmed until named. The tripwire
+  // stays silent: an alarmed plateau is not quiet-unmatched.
+  assert(ph2.find("[RL] clear") == std::string::npos);
+  assert(ph2.find("quiet-unmatched=") == std::string::npos);
 
-  fprintf(stderr, "TRIPCHECK OK: tripwire silent on matched quiet steps, "
-                  "fires off-centroid, local log only\n");
+  fprintf(stderr, "TRIPCHECK OK: labeled regime trains+clears, unknown "
+                  "regime alarms and stays alarmed until named\n");
   return 0;
 }

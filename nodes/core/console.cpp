@@ -15,6 +15,7 @@ void Console::execCmd(char* s) {
   if (s[0] == 's') { app_->startLearning(); return; }
   if (s[0] == 'r') { app_->sensorPollNow(); return; }
   if (s[0] == 'l') { app_->listLibrary(); return; }
+  if (s[0] == 'p') { app_->listPending(); return; }
   if (s[0] == 'm') { app_->printStatus(); return; }
   if (s[0] == 'f' && sscanf(s, "f %31s %15s", label, act) >= 1) {
     if (act[0] == 0) snprintf(act, sizeof(act), "label");
@@ -26,7 +27,8 @@ void Console::execCmd(char* s) {
     return;
   }
   Serial.println("cmds: s=start learning  r=poll now  l=library  "
-                 "f <label> [normal|fault]  m=status  reset=factory reset");
+                 "p=pending batches  f <label> [normal|fault]  m=status  "
+                 "reset=factory reset");
 }
 
 void Console::tick() {

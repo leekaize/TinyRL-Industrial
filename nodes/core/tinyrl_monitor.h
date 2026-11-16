@@ -59,6 +59,7 @@ public:
   struct StepOut {
     bool alarm_open;    // ALARM just raised  -> app opens an episode
     bool alarm_clear;   // ALARM just cleared -> app closes episode
+    bool settled;       // false = mid-transition (gate froze decisions)
   };
 
   void begin(const FeatureProfile& prof);
@@ -76,6 +77,7 @@ public:
   bool     learning()   const { return learning_; }
   bool     thetaReady() const { return theta_ready_; }
   bool     alarmed()    const { return alarmed_; }
+  bool     settled()    const { return settled_; }
   float    score()      const { return score_; }
   float    theta()      const { return theta_; }
   uint32_t steps()      const { return step_; }
@@ -99,6 +101,7 @@ public:
     int16_t  hi, lo;
     float    fs_mu[cfg::MAX_FEATURES];              // C-space anchors (v5)
     float    fs_unit[cfg::MAX_FEATURES];            // per-feature match units (v5)
+    float    fs_anchor[cfg::MAX_FEATURES];          // rel-space anchors (v6)
     float    fs_lo[cfg::MAX_FEATURES], fs_hi[cfg::MAX_FEATURES];
     uint8_t  fs_armed;
     uint32_t fs_steps;
@@ -109,6 +112,7 @@ public:
 
 private:
   void buildNet();                   // rebuild net + optimizer TOGETHER
+  void resetSettle();                // motion EMAs + calm counter
   ag::Matrix frozenNorm(const ag::Matrix& x) const;
 
   const FeatureProfile* prof_ = nullptr;
@@ -140,4 +144,13 @@ private:
   int16_t  hi_ = 0, lo_ = 0;
   bool     learning_ = false, theta_ready_ = false, alarmed_ = false;
   float    last_raw_[cfg::MAX_FEATURES];
+
+  // settle gate state (volatile by design: recomputed live, ~20 s warmup
+  // after boot/resume, once)
+  float    mot_fast_ = 0, mot_slow_ = 0;      // motion EMAs
+  int      calm_ = 0;                         // consecutive calm steps
+  bool     settled_ = true, has_prev_rel_ = false;
+  bool     prev_settled_ = true;              // rising edge = regime entry
+  float    prev_rel_[cfg::MAX_FEATURES];      // last condition-space position
+  float    sr_base_ = 1.0f;                   // slow surprise baseline (novelty ref)
 };

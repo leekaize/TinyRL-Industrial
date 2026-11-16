@@ -36,12 +36,21 @@ An episode with `condition_id: "unknown"` is the node ASKING for a label.
    - Have OTHER nodes seen similar meas signatures recently? (cross-node
      evidence - see Skill 4)
    - Is there a maintenance log entry around this timestamp?
-3. Label ONLY when confident:
-   `Action/feedback  {"action":"label","label":"belt_slip","by":"agent-01"}`
+3. Label ONLY when confident, BY BATCH ID (the node stores settled
+   unknown batches in flash; ids stream as `P0001...`):
+   `Action/feedback  {"action":"label","label":"belt_slip","by":"agent-01","batch":"P0001"}`
    - label = short snake_case slug; reuse an existing slug across nodes for
      the same physical phenomenon (this is what grows the knowledge graph).
+   - late labels are fine: the batch survives reboots, so you may gather
+     context (sibling evidence, maintenance log) before answering.
+   - a batch that no longer means anything (the state passed, the evidence
+     is gone): `{"action":"discard","batch":"P0001"}` - the model is
+     untouched and the node will ask again next occurrence.
+   - faults are named WITH their operating point (compound slug,
+     e.g. speed_1_imbalance): the same fault at a different setpoint is a
+     different library condition.
 4. If the episode was noise (sensor glitch, transient, operator action):
-   `{"action":"normal"}` — the node desensitises itself (theta +10%).
+   `{"action":"normal"}` - the node desensitises itself (theta +10%).
 5. If the human should decide (rare, first occurrence, high impact): say so
    in the site channel and WAIT; do not label on a guess. A wrong label is
    worse than a late label - centroids are hard to un-learn.
@@ -53,11 +62,13 @@ An episode with `condition_id: "unknown"` is the node ASKING for a label.
   more than ~5 normal-false-alarm corrections per week (its theta fit is
   poor - recommend relearning at a representative load).
 - During a node's learning phase (state=learn) do NOT send labels; wait for
-  state=ok. If a node is stuck in learn > 20 min, the sensor is likely not
+  state=ok. If a node is stuck in learn > 3 min, the sensor is likely not
   fresh - check the node's console diagnostics via the operator.
-- Fresh deployment playbook: node boots idle → operator starts learning at
-  NORMAL load (console 's' or `{"action":"start"}`) → wait for ok → done.
-  Nodes resume from flash after power cycles with no relearning.
+- Fresh deployment playbook (2026-11-15): commission on the STOPPED machine
+  (console 's' or `{"action":"start"}`) - the CAL baseline auto-registers as
+  the `op_stopped` normal condition; then start the machine and label each
+  new operating point / fault as its ask opens. Nodes resume from flash
+  after power cycles with no relearning.
 
 ## Skill 4 — Cross-node orchestration & knowledge graph
 

@@ -1,11 +1,10 @@
 .pio
 
-# python bytecode (webbench server)
+# python bytecode (bench server)
 __pycache__/
 
 # web bench exports (research data; force-add a paper run if wanted)
-tests/host-test/webbench/runs/
+tests/bench/runs/
 
 # personal: not part of the public repo
 .anki
-.workbook

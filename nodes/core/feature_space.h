@@ -1,20 +1,28 @@
 // =====================================================================
-// feature_space.h -- frozen ratio-to-normal condition space ("C mapping").
+// feature_space.h -- frozen anchored-ratio condition space ("C mapping").
 //
 // Two normalizers, two purposes (do not merge them):
-//   1. THIS one: maps each feature to 0..1 by RATIO to its CAL mean,
-//      two-sided around 0.5, dynamic range CONDITION_K per half scale
-//      (user decision 2026-11-14, replaces the MVP clamp-to-range log
-//      mapping whose +-3-sigma edges saturated: every strong fault
-//      landed on the same point and loose_mount matched imbalance).
+//   1. THIS one: maps each feature to log2((x+A)/(mu+A)) decades, where
+//      mu = CAL mean and A = 6*CAL sigma (the ANCHOR, 2026-11-15).
 //      Used ONLY for condition-library centroids, the alarm-quiet path
-//      and episode summaries. Severity scales naturally: a 2x excursion
-//      sits higher than a 1.5x one.
+//      and episode summaries.
+//      Why anchored: a bare log2(x/mu) breaks on the 2026-11-15
+//      stopped-machine commissioning. A near-dead CAL signal (drive
+//      current/torque/setpoint read ~0 while stopped, vib bands ~1e-6)
+//      makes mu ~ 0 or negative: negative mu stored NaN centroids (NaN
+//      compares false and the feature passed EVERY match), and the
+//      SCORE_FLOOR guard collapsed the running states - every state far
+//      above the floor clamped to the same rel, so speed_1, speed_2 and
+//      phase_loss became one indistinguishable point (bench: the drive
+//      went structurally blind once speed_1 was labelled). The anchor
+//      keeps dead signals finite and ordered (x=0 maps to a finite
+//      negative coordinate, not NaN) while leaving healthy features
+//      nearly unchanged (A << mu there).
 //   2. TinyRL NormalizeObservation (inside tinyrl_monitor): running
 //      Welford z-scores that feed the network while it trains.
 //
-// calibrateStep() is Welford; arm() freezes lo/hi = mu +- 3*sigma with
-// the near-constant-signal guard from the MVP.
+// calibrateStep() is Welford; arm() freezes mu/sd, derives the anchor
+// and each feature's matching unit.
 // =====================================================================
 #pragma once
 #include <math.h>
@@ -45,8 +53,9 @@ public:
     }
   }
 
-  // Freeze ranges. Must be called exactly once, after calReady().
-  // Also derives each feature's matching unit (decades of one sigma).
+  // Freeze moments. Must be called exactly once, after calReady().
+  // Also derives each feature's anchor (6 sigma) and matching unit
+  // (decades of one calibrated sigma, measured IN the rel coordinate).
   void arm() {
     for (int f = 0; f < nf_; ++f) {
       Range& m = r_[f];
@@ -58,29 +67,34 @@ public:
       }
       m.lo = fmaxf(lo, cfg::SCORE_FLOOR);
       m.hi = fmaxf(hi, m.lo * 1.02f);
-      float mu = m.mu;
-      if (mu < cfg::SCORE_FLOOR) mu = cfg::SCORE_FLOOR;
-      m.unit = fmaxf(log2f(1.0f + sd / mu), 0.05f);
+      m.sd = sd;
+      // anchor: 6 sigma so the whole CAL noise band (uniform fixtures
+      // reach +-1.7 sd) stays clear of the guarded floor
+      m.anchor = fmaxf(6.0f * sd, cfg::SCORE_FLOOR);
+      float denom = fabsf(m.mu) + m.anchor;
+      m.unit = fmaxf(log2f(1.0f + sd / denom), 0.05f);
     }
     armed_ = true;
   }
 
-  // Map to log2(x/mu) decades, clamped (the condition position):
-  //   mu -> 0,  2*mu -> +1,  mu/2 -> -1.  Dead CAL signal guarded.
+  // The condition position: log2((x+A)/(mu+A)) decades, clamped for
+  // float sanity (mu -> 0, 2*mu -> ~+1 when A is small). Dead CAL
+  // signals stay finite and ordered; x = 0 maps below mu, never NaN.
   float rel(int f, float x) const {
     const Range& m = r_[f];
-    float mu = m.mu;
-    if (mu < cfg::SCORE_FLOOR) mu = cfg::SCORE_FLOOR;
-    float d = log2f(x / mu);
+    float denom = fabsf(m.mu) + m.anchor;
+    float num = x + m.anchor;
+    float floor_num = denom * 1e-3f;              // >= -9.97 decades
+    if (num < floor_num) num = floor_num;
+    float d = log2f(num / denom);
     if (d > cfg::REL_CLAMP) d = cfg::REL_CLAMP;
     if (d < -cfg::REL_CLAMP) d = -cfg::REL_CLAMP;
     return d;
   }
 
-  // Per-feature matching unit: decades of ONE calibrated sigma. The
-  // matching radius is q * unit(f) so it scales with each feature's own
-  // noise (vib bands are 20x noisier than the drive's set-frequency
-  // register). Floor 0.05 dec: no feature gets a sub-3.5% radius.
+  // Per-feature matching unit: decades of ONE calibrated sigma, scaled
+  // by the anchored level (feature_space.h arm()). Fallback for
+  // conditions that carry no measured units of their own yet.
   float unit(int f) const { return r_[f].unit; }
   void setUnit(int f, float u) { r_[f].unit = u; }
 
@@ -89,14 +103,17 @@ public:
 
   float lo(int f) const { return r_[f].lo; }
   float hi(int f) const { return r_[f].hi; }
+  float anchor(int f) const { return r_[f].anchor; }
 
   // persistence restore (bypasses calibration)
   void setRange(int f, float lo, float hi) { r_[f].lo = lo; r_[f].hi = hi; }
+  void setAnchor(int f, float a) { r_[f].anchor = a; }
   void forceArmed(bool a, uint32_t steps)  { armed_ = a; n_ = steps; }
 
 private:
   struct Range {
     float mu = 0, m2 = 0, unit = 0.05f;
+    float sd = 0, anchor = cfg::SCORE_FLOOR;
     float lo = cfg::SCORE_FLOOR, hi = cfg::SCORE_FLOOR * 4;
   };
   Range    r_[cfg::MAX_FEATURES];

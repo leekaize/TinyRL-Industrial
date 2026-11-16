@@ -1,10 +1,111 @@
-# Architecture & Hardware Notes — TinyRL-Industrial
+# Architecture & Hardware Notes - TinyRL-Industrial
 
-## TinyRL Functional Block Diagrams
+Two parts, in reading order:
+
+- **Part 1, the node**: the modules we wrote in `nodes/core/`, how data moves
+  through them at 1 Hz, and what lives in flash. Start here.
+- **Part 2, the TinyRL stack on ESP32-S3**: how the submodule uses the chip
+  (memory, compute, flash, runtime). Our node inherits these mechanisms;
+  read it when you need hardware depth.
+
+## Part 1: the node (`nodes/core/`, our code)
+
+### Module map
+
+```mermaid
+flowchart LR
+    S["ISensorNode: g100 sensor package"] -->|"features 1 Hz"| APP["SensorNodeApp: node_runtime"]
+    APP --> MON["TinyRLConditionMonitor: predict, score, bounded update"]
+    APP --> LIB["ConditionLibrary: centroids JSONL"]
+    APP --> EP["EpisodeManager: open feed close"]
+    APP --> MSG["UnsMessaging: 4 MQTT topics"]
+    APP --> CON["Console: s r l p f m reset"]
+    MON -->|"space"| LIB
+    EP -->|"match on open"| LIB
+    APP -->|"save load"| FS[("LittleFS: model.bin, net.bin, conditions.jsonl, pending.jsonl")]
+    MSG -->|"Action feedback down"| APP
+```
+
+`main.cpp` is about 20 lines of identity: it builds the sensor and calls
+`app.begin(sensor, id)` plus `app.tick()` from the loop. Everything else is
+`nodes/core/`, compiled unchanged for every node.
+
+### One second in the life of a node (the 1 Hz data path)
+
+1. `SensorNodeApp::tick()` polls the sensor (Modbus registers) and gates on
+   freshness (`node_runtime.cpp`).
+2. `mon_.step()` standardizes features, predicts the next step, takes one
+   bounded update, updates the score EMA (`tinyrl_monitor.cpp`, README
+   Algorithm 1). The settle gate holds all three off mid-transition, and
+   the update itself runs only on settled steps of LABELED conditions.
+3. Score above theta for 5 steps: `EpisodeManager::open()` matches the
+   profile against centroids; no match within r = 0.30 means `unknown` -
+   the settled state is stored as a pending batch and the node asks
+   (`episode.cpp`, `pending_store.cpp`, README Algorithms 2 + 3).
+4. While alarmed, `ep_.feed()` accumulates per-feature means; on clear or
+   `normal` feedback the episode closes and the centroid refines by EMA
+   0.9/0.1 (`episode.cpp:66-75`).
+5. `UnsMessaging` publishes only on state or condition change; autosave
+   rewrites the flash files at most every 5 min (flash-wear budget,
+   `node_config.h` AUTOSAVE_MS; the pending store saves on batch events).
+
+### Two feature spaces (do not merge them)
+
+| Space | Frozen when | Used for | Never for |
+|---|---|---|---|
+| z-space (Welford moments) | end of theta fit | network input, surprise, theta | condition matching |
+| anchored-ratio decades (rel = log2((x+A)/(mu+A)), A = 6 CAL sigma) | end of CAL | condition centroids + per-condition match units, episode summaries | network input |
+
+The split is what protects labels from network drift: centroids live in a
+space that stopped moving at the end of CAL, so a label learned today still
+matches weeks later no matter what the net does.
+
+### Boot and persistence
+
+```mermaid
+flowchart TD
+    B0[boot] --> B1[mount LittleFS]
+    B1 --> B2{"model.bin v4 loads?"}
+    B2 -- "no file or bad magic" --> IDLE["IDLE: wait for s or start"]
+    B2 -- "yes, was mid-CAL" --> CAL["restart CAL, keep the net"]
+    B2 -- "yes, theta ready" --> B3{"net.bin loads, topology matches?"}
+    B3 -- yes --> MON["resume monitoring, zero relearning"]
+    B3 -- no --> FR["factory reset, files erased"]
+    FR --> IDLE
+    IDLE --> LEARN["s or start: CAL then FIT"]
+    CAL --> LEARN
+    LEARN --> MON
+    MON --> LOOP["1 Hz monitor step"]
+```
+
+What each file holds (`persistence.cpp`, `condition_library.cpp`):
+
+- `/model.bin` v4: score stats + theta + frozen ranges + normalizer moments
+  (the POD mirror `ModelBlobV4`, magic `TRL4`).
+- `/net.bin`: every Linear layer's weights and bias verbatim; the topology is
+  re-validated on load, a mismatch means the pair is broken and the node
+  relearns.
+- `/conditions.jsonl`: one condition per line, human-inspectable:
+  `id`, centroid `c[]`, `count`, `first`/`last`, `source`.
+- `/pending.jsonl`: stored unknown batches (`id` `P0001...`, `mean[]`,
+  `n`, timestamps) waiting for a label or discard, by id.
+- `reset` (factory reset, typed in full) erases all of them.
+
+### What it costs
+
+| Item | Value | Where |
+|---|---|---|
+| Network | 4-32-32-4, 1,348 params | `node_config.h` NET_HIDDEN |
+| Optimizer state | traces + leaky max + grads, about 16 KB | `streaming_optimizer.h` |
+| Compute per step | forward + backward + update at 1 Hz, far under 0.1% CPU at 240 MHz | runtime claim, README |
+| Flash budget | four files, autosave at most every 5 min (about 12 writes per hour) | `node_config.h` AUTOSAVE_MS |
+| Bigger nets | PSRAM used transparently, see Part 2 | `platformio.ini` |
+
+## Part 2: the TinyRL stack on ESP32-S3 (submodule notes)
 
 > Diagrams + corresponding source code for [TinyRL](https://github.com/mohmdelsayed/TinyRL) ([docs](https://www.tinyrl.ai/docs/)) on [ESP32-S3](https://www.espboards.dev/esp32/yd-esp32-s3/) N16R8 (16 MB Quad SPI flash plus 8 MB Octal SPI PSRAM)
 
-The **original TinyRL never stores weights in flash and never calls PSRAM APIs directly.** we enable it through `core/persistence.cpp` which saves `net.bin` (network weights) + `model.bin` (stats/theta) so a rebooted node resumes monitoring with zero relearning. That is what makes the node truly plug-and-play.
+The **original TinyRL never stores weights in flash and never calls PSRAM APIs directly.** We enable it through `core/persistence.cpp` which saves `net.bin` (network weights) + `model.bin` (stats/theta) so a rebooted node resumes monitoring with zero relearning. That is what makes the node truly plug-and-play.
 
 ### Master Architecture (full stack)
 
@@ -18,7 +119,7 @@ Five layers:
 - LAYER 2: Platform and Build Configuration
 - LAYER 1: ESP32-S3
 
-### Corresponding code — the RL part of `stream_ac_continuous.cpp`
+### Corresponding code - the RL part of `stream_ac_continuous.cpp`
 
 ```cpp
 void loop() {                                        // 1 full RL step per iteration
@@ -34,15 +135,13 @@ void loop() {                                        // 1 full RL step per itera
 }
 ```
 
-## Memory Layout (PSRAM + internal SRAM)
-
-![Memory subsystem](memory_psram.png)
+### Memory Layout (PSRAM + internal SRAM)
 
 **Key:** TinyRL contains *zero* direct `heap_caps_malloc(MALLOC_CAP_SPIRAM)` calls. All memory flows through `std::vector<float>` inside `ag::Matrix` (`matrix.h:44`) → plain `operator new`. The PSRAM utilization is achieved entirely at build time: `CONFIG_SPIRAM_USE_MALLOC=1` makes the Arduino-ESP32 heap allocator transparently place large blocks (network weights, ObGD eligibility traces, CNN frame buffers) into the 8 MB octal PSRAM, while small, hot objects stay in internal SRAM served by the 32 KB L1 cache.
 
 ### Corresponding code
 
-**The single storage primitive — `src/matrix.h:44`** (every tensor, weight,
+**The single storage primitive - `src/matrix.h:44`** (every tensor, weight,
 trace and frame ends up here):
 
 ```cpp
@@ -54,7 +153,7 @@ private:
     std::vector<Float> data_;          // <- all memory goes through new/delete
 ```
 
-**PSRAM enablers — `platformio.ini` + board JSON:**
+**PSRAM enablers - `platformio.ini` + board JSON:**
 
 ```ini
 -DBOARD_HAS_PSRAM
@@ -72,7 +171,7 @@ board_build.arduino.memory_type = dio_opi   ; octal (OPI) PSRAM + DIO flash
            "maximum_ram_size": 327680, "flash_size": "8MB" }
 ```
 
-**Fragmentation-proof frame storage — `stream_q_atari.cpp`:**
+**Fragmentation-proof frame storage - `stream_q_atari.cpp`:**
 
 ```cpp
 // Fixed-size array instead of std::deque  (avoid heap fragmentation on ESP32)
@@ -82,7 +181,7 @@ ag::Matrix frame_hw_;             // reusable reshape buffer
 ag::Matrix out_;                  // reusable stack buffer (1, n, h, w)
 ```
 
-**Runtime monitoring — ESP32 guide:**
+**Runtime monitoring - ESP32 guide:**
 
 ```cpp
 void print_memory_info() {
@@ -92,23 +191,21 @@ void print_memory_info() {
 }
 ```
 
-## Compute Layout (kernel dispatch & vector processing)
-
-![Compute subsystem](compute_kernels.png)
+### Compute Layout (kernel dispatch & vector processing)
 
 **Honest technical note:** the ESP32-S3 LX7 cores expose a 128-bit SIMD vector
 ISA (and Espressif ships the ESP-DSP / ESP-NN libraries). TinyRL does **not**
 call any Xtensa SIMD intrinsics or esp-dsp functions. `esp32_dsp.h` ships
 *hand-tuned pure scalar kernels* whose 2–4x speedup comes from:
 
-1. **4/8-way loop unrolling** — feeds the LX7's dual-issue pipeline (ILP),
-2. **cache-blocked GEMM** — `BLOCK = 32` sized for the 32 KB L1 cache,
-3. **`-O3 -ffast-math`** — lets GCC auto-vectorize the straight-line loops,
-4. **stride-specialized im2col** — `memcpy` fast path for stride 1.
+1. **4/8-way loop unrolling** - feeds the LX7's dual-issue pipeline (ILP),
+2. **cache-blocked GEMM** - `BLOCK = 32` sized for the 32 KB L1 cache,
+3. **`-O3 -ffast-math`** - lets GCC auto-vectorize the straight-line loops,
+4. **stride-specialized im2col** - `memcpy` fast path for stride 1.
 
 ### Corresponding code
 
-**Platform detection + dispatch — `src/simd.h:55-58, 453-469`:**
+**Platform detection + dispatch - `src/simd.h:55-58, 453-469`:**
 
 ```cpp
 // ESP32-S3 Detection (checked first - most constrained platform)
@@ -132,7 +229,7 @@ AG_INLINE void matmul(const Float* A, const Float* B, Float* C, int M, int K, in
 }
 ```
 
-**Cache-blocked GEMM — `src/esp32_dsp.h:276-296`:**
+**Cache-blocked GEMM - `src/esp32_dsp.h:276-296`:**
 
 ```cpp
 AG_ESP32_INLINE void matmul_esp32(const Float* A, const Float* B, Float* C,
@@ -154,7 +251,7 @@ AG_ESP32_INLINE void matmul_esp32(const Float* A, const Float* B, Float* C,
 }
 ```
 
-**Instruction-level parallelism — 4-way unrolled dot product, `esp32_dsp.h:158-168`:**
+**Instruction-level parallelism - 4-way unrolled dot product, `esp32_dsp.h:158-168`:**
 
 ```cpp
 template<> AG_ESP32_INLINE Float dot<Float>(const Float* a, const Float* b, size_t n) {
@@ -170,7 +267,7 @@ template<> AG_ESP32_INLINE Float dot<Float>(const Float* a, const Float* b, size
 }
 ```
 
-**Fused optimizer kernels — `src/optimizer.h:53-62` (`AG_ESP32_DSP` path):**
+**Fused optimizer kernels - `src/optimizer.h:53-62` (`AG_ESP32_DSP` path):**
 
 ```cpp
 void step() override {
@@ -188,7 +285,7 @@ void step() override {
 }
 ```
 
-**Streaming-RL eligibility traces — `obgd.h step()` + `simd.h:432`:**
+**Streaming-RL eligibility traces - `obgd.h step()` + `simd.h:432`:**
 
 ```cpp
 // 1. Update traces & compute L1 norm using SIMD kernel
@@ -205,15 +302,13 @@ for (size_t i = 0; i < n_params; ++i)
     ag::simd::fma_scalar(trace_data, neg_update_scale, param_data, size);
 ```
 
-## Flash & Storage Layout
+### Flash & Storage Layout
 
-![Flash storage](flash_storage.png)
-
-**Key:** the neural-network weights are **never read from flash** — there is no model file, no `esp_partition_read()`. They are random-initialized at boot from the hardware TRNG and *learned online* (that is the whole point of streaming RL). Flash holds only the firmware image itself; the header-only design compiles the entire framework, the RL agent and the environment physics into one binary.
+**Key:** the neural-network weights are **never read from flash** - there is no model file, no `esp_partition_read()`. They are random-initialized at boot from the hardware TRNG and *learned online* (that is the whole point of streaming RL). Flash holds only the firmware image itself; the header-only design compiles the entire framework, the RL agent and the environment physics into one binary.
 
 ### Corresponding code
 
-**Board layout — `boards/freenove_esp32_s3_wroom.json`:**
+**Board layout - `boards/freenove_esp32_s3_wroom.json`:**
 
 ```json
 "build": {
@@ -228,7 +323,7 @@ for (size_t i = 0; i < n_params; ++i)
             "maximum_size": 8388608 }
 ```
 
-**Size-conscious build — `platformio.ini` / ESP32 guide:**
+**Size-conscious build - `platformio.ini` / ESP32 guide:**
 
 ```ini
 -O3
@@ -241,13 +336,11 @@ for (size_t i = 0; i < n_params; ++i)
 #define AG_EMBEDDED 1
 ```
 
-## Runtime: the on-device RL loop & peripheral services
-
-![Runtime loop](runtime_loop.png)
+### Runtime: the on-device RL loop & peripheral services
 
 ### Corresponding code
 
-**Hardware TRNG bridge — `examples/stream_x_esp32/src/getentropy_dummy.c` (entire file):**
+**Hardware TRNG bridge - `examples/stream_x_esp32/src/getentropy_dummy.c` (entire file):**
 
 ```c
 #include <stdint.h>
@@ -263,7 +356,7 @@ int getentropy(void *buf, size_t buflen) {
 }
 ```
 
-**Kernel benchmarking — `benchmark_kernels.cpp`:**
+**Kernel benchmarking - `benchmark_kernels.cpp`:**
 
 ```cpp
 ag::Matrix A = ag::Matrix::Random(1, INPUT_DIM);
@@ -289,7 +382,7 @@ esp_pm_config_esp32s3_t pm_config = {
 esp_pm_configure(&pm_config);
 ```
 
-## Summary of hardware-utilization mechanisms
+### Summary of hardware-utilization mechanisms
 
 | ESP32-S3 capability | How TinyRL uses it | Where in code |
 |---|---|---|
@@ -297,7 +390,7 @@ esp_pm_configure(&pm_config);
 | **Internal SRAM 512 KB + 32 KB L1** | Small/hot objects; GEMM blocking `BLOCK=32` sized to cache | `esp32_dsp.h:276-278` |
 | **Flash 8 MB QIO @ 80 MHz** | Firmware only (header-only framework + agent + env); weights are learned online, never stored | board JSON `default_8MB.csv` |
 | **PSRAM cache errata** | Compiler workaround flag keeps PSRAM cache coherent | `-mfix-esp32-psram-cache-issue` |
-| **LX7 dual-core 240 MHz + FPU** | Hand-tuned scalar kernels: 4-way unrolling (ILP), fused FMA sweeps; **no SIMD intrinsics** — `-O3 -ffast-math` auto-vectorizes | `esp32_dsp.h`, `simd.h` |
+| **LX7 dual-core 240 MHz + FPU** | Hand-tuned scalar kernels: 4-way unrolling (ILP), fused FMA sweeps; **no SIMD intrinsics** - `-O3 -ffast-math` auto-vectorizes | `esp32_dsp.h`, `simd.h` |
 | **Hardware TRNG** | Seeds the C++ RNG through a `getentropy` shim → reproducible-but-random inits | `getentropy_dummy.c` |
 | **USB-CDC / UART** | 115200 Bd telemetry of episode returns | `stream_ac_continuous.cpp:71` |
 | **esp_timer / micros** | Kernel-level benchmarking | `benchmark_kernels.cpp` |

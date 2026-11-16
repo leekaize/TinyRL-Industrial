@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Host-side verification of the GENERAL core against the REAL TinyRL
 # headers (Arduino stubs, no hardware). Run from repo root:
-#   bash test/host-test.sh
+#   bash tests/run_tests.sh
 set -eo pipefail
 TINYRL="$(dirname "$0")/../TinyRL"
 cd "$(dirname "$0")/.."
 P=nodes
 STUBS="$(dirname "$0")/stub_esp32"
-TESTFILES="$(dirname "$0")/host-test"
+TESTFILES="$(dirname "$0")/host"
 INC="-I $STUBS -I $TINYRL/src -I $TINYRL/examples/stream_x/src -I $P/core"
-echo "== 1/4 syntax check: all 12 TUs =="
+echo "== 1/4 syntax check: all 14 TUs =="
 for f in core/node_runtime.cpp core/uns_messaging.cpp core/console.cpp \
          core/tinyrl_monitor.cpp core/condition_library.cpp core/episode.cpp \
-         core/persistence.cpp sensors/vfd_g100/g100_modbus.cpp \
+         core/pending_store.cpp core/persistence.cpp sensors/vfd_g100/g100_modbus.cpp \
          sensors/vfd_g100/g100_sensor.cpp vfd_g100_node/main.cpp \
          sensors/vibration_adxl/adxl345.cpp sensors/vibration_adxl/vibration_sensor.cpp \
          vibration_node/main.cpp; do
@@ -24,22 +24,22 @@ echo "   clean"
 echo "== 2/4 simulation: cal/fit/quiet/alarm/persist/library =="
 g++ -std=c++17 -O3 -DAG_EMBEDDED $INC $STUBS/stub_impl.cpp \
     $P/core/tinyrl_monitor.cpp $P/core/condition_library.cpp \
-    $P/core/episode.cpp $P/core/persistence.cpp $TESTFILES/test_host.cpp \
+    $P/core/episode.cpp $P/core/persistence.cpp $TESTFILES/sim_test.cpp \
     -o /tmp/tinyrl_test_host
 /tmp/tinyrl_test_host | tail -3
 echo "== 3/4 full-node link + boot + console =="
 g++ -std=c++17 -O2 -DAG_EMBEDDED $INC -I $P/sensors/vfd_g100 -I $P/vfd_g100_node \
     $STUBS/stub_impl.cpp $P/core/node_runtime.cpp $P/core/uns_messaging.cpp \
     $P/core/console.cpp $P/core/tinyrl_monitor.cpp $P/core/condition_library.cpp \
-    $P/core/episode.cpp $P/core/persistence.cpp \
+    $P/core/episode.cpp $P/core/pending_store.cpp $P/core/persistence.cpp \
     $P/sensors/vfd_g100/g100_modbus.cpp $P/sensors/vfd_g100/g100_sensor.cpp \
-    $P/vfd_g100_node/main.cpp $TESTFILES/linkcheck.cpp -o /tmp/tinyrl_linkcheck
+    $P/vfd_g100_node/main.cpp $TESTFILES/console_test.cpp -o /tmp/tinyrl_linkcheck
 /tmp/tinyrl_linkcheck | tail -1
 echo "== 4/4 quiet-unmatched tripwire (real SensorNodeApp, fake sensor) =="
 g++ -std=c++17 -O2 -DAG_EMBEDDED $INC \
     $STUBS/stub_impl.cpp $P/core/node_runtime.cpp $P/core/uns_messaging.cpp \
     $P/core/console.cpp $P/core/tinyrl_monitor.cpp $P/core/condition_library.cpp \
-    $P/core/episode.cpp $P/core/persistence.cpp $TESTFILES/tripcheck.cpp \
-    -o /tmp/tinyrl_tripcheck
-/tmp/tinyrl_tripcheck
+    $P/core/episode.cpp $P/core/pending_store.cpp $P/core/persistence.cpp $TESTFILES/tripwire_test.cpp \
+    -o /tmp/tinyrl_tripwire
+/tmp/tinyrl_tripwire
 echo "=== HOST-TEST GREEN: 4/4 stages passed ==="

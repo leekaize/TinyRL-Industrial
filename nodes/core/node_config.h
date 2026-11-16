@@ -39,10 +39,24 @@ constexpr int      CLEAR_LO_N     = 60;     // consecutive quiet    -> clear
 // at running) produces z-scores in the hundreds. Unbounded, they blast
 // the net weights and leave the steady surprise baseline above theta -
 // the alarm latches and the node goes deaf to every later fault. The
-// condition space already clamps (frozen 0..1 ranges); the monitor's
-// frozen z needs the same guard. 5.0 keeps all in-fit noise (~+-4)
-// and 2-4 sigma fault signals untouched.
+// condition space is anchored-ratio for the same reason (feature_space.h);
+// the monitor's frozen z needs the same guard. 5.0 keeps all in-fit noise
+// (~+-4) and 2-4 sigma fault signals untouched.
 constexpr float    Z_CLAMP        = 5.0f;
+
+// ---- settle gate (user requirement 2026-11-15: transitions never train,
+// never alarm, never ask - the node decides only on settled states) ----
+// Motion = the largest per-feature jump in the condition space
+// (log2-ratio decades, feature_space.h rel()). Two EMAs of that motion:
+// fast tracks the live change rate, slow tracks the regime's own noise
+// floor. Settled = fast has plateaued onto slow for SETTLE_CALM_N
+// consecutive steps. Parameter-driven, self-calibrating per regime: no
+// fixed seconds. The stopped floor is tiny, a running floor is larger;
+// both are learned from the live signal, not configured.
+constexpr float    SETTLE_FAST_EMA  = 0.4f;   // live change-rate EMA
+constexpr float    SETTLE_SLOW_EMA  = 0.05f;  // regime noise-floor EMA
+constexpr float    SETTLE_MARGIN    = 1.5f;   // fast <= MARGIN * slow = calm
+constexpr int      SETTLE_CALM_N    = 3;      // consecutive calm steps
 
 // ---- TinyRL agent (network + streaming optimizer) ----
 // Default optimizer: StreamingOptimizer (Stream-X v3, nodes/core/
@@ -64,27 +78,50 @@ constexpr uint32_t SEED           = 20260101u; // 0 = seed from TRNG at boot
 constexpr int      LIB_MAX        = 12;     // learned conditions per node
 // Matching is MAX-COMPONENT (bench finding 2026-11-14: the mean over 4-6
 // features lets one discriminative feature be outvoted by the flat ones),
-// in log2-ratio units (rel(), feature_space.h), with a PER-FEATURE radius:
-// q * unit(f), unit(f) = log2(1 + CAL sigma/mu). One global radius cannot
-// serve both nodes: vib bands jitter +-40% while the drive's fault
-// excursions are +-30% - the radius must scale with each feature's own
-// calibrated noise. Condition positions are log2(x/mu) decades, clamped.
-constexpr float    REL_CLAMP      = 6.0f;   // rel() saturation (decades)
+// in anchored log2-ratio units (rel(), feature_space.h), with a PER-
+// CONDITION radius: q * u(f), the condition's own measured spread
+// (2026-11-15: CAL-only units were 20 decades on the drive's dead
+// features - blind to every running state - and 0.15 decades on the
+// vib's bands - narrower than their own noise). u=0 falls back to the
+// CAL unit. Positions are rel decades, clamped wide for float sanity.
+constexpr float    REL_CLAMP      = 12.0f;  // rel() sanity bound (decades)
 constexpr float    QUIET_Q        = 3.0f;   // alarm-quiet + episode pre-name
 constexpr float    MATCH_Q        = 4.0f;   // tripwire + recognised-normal display
 // Settles 2012 ch. 2.5 myopia tripwire: log line every N quiet-unmatched steps
 constexpr uint32_t QUM_REPORT_EVERY = 1000;
 
+// Settled identity check (2026-11-15): an open episode whose state moved
+// is re-identified only after this many CONSECUTIVE settled confirmations
+// (single noise vetoes must not churn episodes and batches)
+constexpr int      IDENT_DRIFT_N   = 5;
+
+// ---- training policy (user decision 2026-11-15) ----
+// The net learns every LABELED condition (normal AND fault) while the
+// state is SETTLED; unknown regimes never train, so a novel condition
+// keeps alarming until the operator names it. The rate is
+// novelty-modulated: full MONITOR_LR while surprise is high against its
+// own slow baseline (new regime), a small floor at the baseline
+// (stability), never zero (a very slow drift keeps creeping the baseline
+// and stays trackable; drift beyond the match radius reads as unknown).
+constexpr float    LR_MIN_FRAC     = 0.1f;    // floor fraction of MONITOR_LR
+constexpr float    NOVELTY_K       = 4.0f;    // frac = (surp-base)/(K*base)
+constexpr float    NOVELTY_EMA     = 0.01f;   // slow surprise baseline EMA
+
 // ---- persistence ----
 constexpr uint32_t AUTOSAVE_MS    = 300000; // flash wear: <=12 writes/hour
 constexpr uint32_t MODEL_MAGIC    = 0x54524C34u; // "TRL4"
-constexpr uint32_t MODEL_VERSION  = 5;     // v5: condition space anchors (mu)
+constexpr uint32_t MODEL_VERSION  = 6;     // v6: anchored condition space
 constexpr uint32_t NET_MAGIC      = 0x54524C4Eu; // "TRLN"
 constexpr uint32_t NET_VERSION    = 1;
 
 constexpr const char* MODEL_FILE  = "/model.bin";
 constexpr const char* NET_FILE    = "/net.bin";
 constexpr const char* COND_FILE   = "/conditions.jsonl";
+
+// pending batches of settled unknown states (user workflow 2026-11-15:
+// store in flash, label or discard BY ID, labels may arrive late)
+constexpr int      PENDING_MAX     = 8;
+constexpr const char* PENDING_FILE = "/pending.jsonl";
 
 constexpr const char* SCHEMA_VER  = "uns-v1.1";
 constexpr const char* FW_VERSION  = "2.0.0-modular";

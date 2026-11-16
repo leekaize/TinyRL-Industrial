@@ -7,6 +7,7 @@
 <div id="errbar" class="hidden"></div>
 <h1>Interactive monitor bench - <span id="hdr"></span></h1>
 <div class="controls">
+ <button id="b_learn">commission (learn)</button>
  <button id="b_run5">+5 s</button>
  <button id="b_run60">+60 s</button>
  <button id="b_export" class="grey">export run</button>
@@ -26,7 +27,6 @@
   <button onclick="inject('SPEED2')">speed 2 (20 Hz)</button>
   <span>inject fault:</span>
   <button onclick="inject('IMBALANCE')">imbalance</button>
-  <button onclick="inject('LOOSE_MOUNT')">loose mounting</button>
   <button onclick="inject('PHASE_LOSS')">phase loss</button>
   <button class="ok" onclick="inject('NORMAL')">clear fault</button>
  </div>

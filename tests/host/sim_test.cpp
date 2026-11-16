@@ -1,5 +1,5 @@
 // =====================================================================
-// test_host.cpp -- host-side simulation of the TinyRL condition monitor.
+// sim_test.cpp -- host-side simulation of the TinyRL condition monitor.
 // Compiles the REAL general-core modules against the REAL TinyRL headers
 // with Arduino stubs, then:
 //   A) CAL -> theta fit on a synthetic fixed-load induction-motor stream
@@ -10,6 +10,7 @@
 //   E) condition library label -> save -> load -> match
 // =====================================================================
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -62,7 +63,7 @@ int main() {
   float x[4];
   TinyRLConditionMonitor::StepOut out;
 
-  // plasticity audit state (Dohare 2024; host-test/bench logging only):
+  // plasticity audit state (Dohare 2024; host-test suite logging only):
   // replica of the monitor's Welford normalizer + ring of recent raw samples
   plast::ZReplica zr;
   plast::RawWindow rawWin;
@@ -153,6 +154,8 @@ int main() {
              printf("   event: %s sev=%s cond=%s dur=%lus\n%s\n", ev, sev,
                     cid, (unsigned long)dur, sum);
            });
+  float st_rel[4];
+  (void)st_rel;
   ep.open(x, mon.space(), (uint32_t)t * 1000);
   char sum[192];
   ep.summary(sum, sizeof(sum), (uint32_t)t * 1000 + 3000);
@@ -160,9 +163,10 @@ int main() {
   printf("E0: generic summary: %s\n", sum);
 
   // ---- E: condition library label -> save -> load -> match --------------
-  float mean[4];
-  ep.means(mean);
-  int idx = lib.label("belt_slip", mean, mon.space(), "agent-01");
+  float rmean[4], rstd[4];
+  ep.relMeans(rmean);
+  ep.relStd(rstd);
+  int idx = lib.label("belt_slip", rmean, rstd, "agent-01");
   assert(idx == 0);
   assert(lib.save(cfg::COND_FILE));
   ConditionLibrary lib2;
@@ -191,14 +195,36 @@ int main() {
     float off[4] = {0, 0, 0, 0};
     printf("F: long-run plasticity bench: %ld steps (report every %ld)\n",
            lr_steps, report);
+    // 2026-11-15 training policy: the net trains only on settled steps of
+    // LABELED conditions. Without labels the bench would freeze the net at
+    // the first shift and measure nothing - so the bench emulates the
+    // operator: the initial regime is labeled at the start, each shift's
+    // regime is labeled 20 steps in (settled). Regimes that sit inside the
+    // previous condition's radius keep training as drift tracking; the
+    // rest read as unknown until labeled - both are the designed paths.
+    ConditionLibrary flib;
+    flib.begin(4);
+    mon.attachLibrary(&flib);
+    long shifted_at = 0;
+    int nreg = 0;
     for (long k = 1; k <= lr_steps; ++k, ++t) {
       if (regime > 0 && k % regime == 0) {         // regime shift
         off[0] += 0.4f; off[1] += 0.15f; off[3] += 4.0f;
+        shifted_at = k;
         printf("F: regime shift at step %lu (offsets %.2f/%.2f/%.2f)\n",
                (unsigned long)mon.steps(), off[0], off[1], off[3]);
       }
       sample(x, t, false);
       x[0] += off[0]; x[1] += off[1]; x[3] += off[3];
+      if (k == 1 || (shifted_at && k == shifted_at + 20)) {
+        // label AFTER x reflects the (new) regime: settled 20 steps in
+        char slug[24];
+        snprintf(slug, sizeof(slug), "regime_%d", nreg++);
+        float rm[4], z[4] = {};
+        for (int f = 0; f < 4; ++f) rm[f] = mon.space().rel(f, x[f]);
+        flib.label(slug, rm, z, "bench", COND_NORMAL);
+        shifted_at = 0;
+      }
       record(x);                                   // moments frozen; window only
       mon.step(x, out);
       if (k % report == 0) plast::audit(mon, zr, rawWin, 4, t);
@@ -207,6 +233,31 @@ int main() {
     printf("F: long-run done at step %lu\n", (unsigned long)mon.steps());
   } else {
     plast::audit(mon, zr, rawWin, 4, t);           // final default-path snapshot
+  }
+
+  // ---- G: per-step compute timing (host proxy for the MCU budget) ------
+  // The monitor step is the whole per-second workload on the node (forward
+  // + bounded update + score EMA + gates). Host timing is an x86 proxy,
+  // not an ESP32 measurement - but it catches order-of-magnitude
+  // regressions (a step that costs > 1 ms on x86 cannot fit a 1 Hz loop
+  // on a 240 MHz LX7 with other tasks). Budget: 1 s per step at 1 Hz.
+  {
+    const int N = 2000;
+    float x[4];
+    double total = 0.0;
+    double worst = 0.0;
+    for (int k = 0; k < N; ++k, ++t) {
+      sample(x, t, false);
+      auto t0 = std::chrono::steady_clock::now();
+      mon.step(x, out);
+      auto t1 = std::chrono::steady_clock::now();
+      double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+      total += us;
+      if (us > worst) worst = us;
+    }
+    printf("G: per-step compute (host proxy): avg %.0f us, max %.0f us "
+           "over %d steps (MCU budget: 1 s/step at 1 Hz)\n",
+           total / N, worst, N);
   }
 
   printf("\nALL HOST TESTS PASSED\n");

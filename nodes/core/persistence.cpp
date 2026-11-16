@@ -8,7 +8,7 @@
 #include "condition_library.h"
 
 // ---- POD mirror of TinyRLConditionMonitor::State (fixed layout) -------
-struct ModelBlobV5 {
+struct ModelBlobV6 {
   uint32_t magic, version;
   float    score, fit_mu, fit_m2, theta;
   uint32_t step;
@@ -16,6 +16,7 @@ struct ModelBlobV5 {
   int16_t  hi, lo;
   float    fs_mu[cfg::MAX_FEATURES];               // C-space anchors (v5)
   float    fs_unit[cfg::MAX_FEATURES];             // per-feature match units (v5)
+  float    fs_anchor[cfg::MAX_FEATURES];           // rel-space anchors (v6)
   float    fs_lo[cfg::MAX_FEATURES], fs_hi[cfg::MAX_FEATURES];
   uint8_t  fs_armed;
   uint32_t fs_steps;
@@ -33,7 +34,7 @@ bool beginFS() {
 bool modelSave(const TinyRLConditionMonitor& m) {
   TinyRLConditionMonitor::State s;
   m.exportState(s);
-  ModelBlobV5 b{};
+  ModelBlobV6 b{};
   b.magic = cfg::MODEL_MAGIC; b.version = cfg::MODEL_VERSION;
   b.score = s.score; b.fit_mu = s.fit_mu; b.fit_m2 = s.fit_m2; b.theta = s.theta;
   b.step = s.step;
@@ -41,6 +42,7 @@ bool modelSave(const TinyRLConditionMonitor& m) {
   b.hi = s.hi; b.lo = s.lo;
   memcpy(b.fs_mu, s.fs_mu, sizeof(b.fs_mu));
   memcpy(b.fs_unit, s.fs_unit, sizeof(b.fs_unit));
+  memcpy(b.fs_anchor, s.fs_anchor, sizeof(b.fs_anchor));
   memcpy(b.fs_lo, s.fs_lo, sizeof(b.fs_lo));
   memcpy(b.fs_hi, s.fs_hi, sizeof(b.fs_hi));
   b.fs_armed = s.fs_armed; b.fs_steps = s.fs_steps;
@@ -58,7 +60,7 @@ bool modelLoad(TinyRLConditionMonitor& m) {
   if (!LittleFS.exists(cfg::MODEL_FILE)) return false;
   File f = LittleFS.open(cfg::MODEL_FILE, "r");
   if (!f) return false;
-  ModelBlobV5 b{};
+  ModelBlobV6 b{};
   size_t n = f.read((uint8_t*)&b, sizeof(b));
   f.close();
   if (n != sizeof(b) || b.magic != cfg::MODEL_MAGIC ||
@@ -71,6 +73,7 @@ bool modelLoad(TinyRLConditionMonitor& m) {
   s.hi = b.hi; s.lo = b.lo;
   memcpy(s.fs_mu, b.fs_mu, sizeof(s.fs_mu));
   memcpy(s.fs_unit, b.fs_unit, sizeof(s.fs_unit));
+  memcpy(s.fs_anchor, b.fs_anchor, sizeof(s.fs_anchor));
   memcpy(s.fs_lo, b.fs_lo, sizeof(s.fs_lo));
   memcpy(s.fs_hi, b.fs_hi, sizeof(s.fs_hi));
   s.fs_armed = b.fs_armed; s.fs_steps = b.fs_steps;

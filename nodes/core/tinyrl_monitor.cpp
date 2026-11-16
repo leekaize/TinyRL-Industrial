@@ -80,11 +80,22 @@ void TinyRLConditionMonitor::buildNet() {
       for (auto* p : l->get_parameters()) n_params_ += p->size();
 }
 
+void TinyRLConditionMonitor::resetSettle() {
+  mot_fast_ = mot_slow_ = 0;
+  calm_ = 0;
+  settled_ = true;
+  prev_settled_ = true;
+  has_prev_rel_ = false;
+  sr_base_ = 1.0f;
+  memset(prev_rel_, 0, sizeof(prev_rel_));
+}
+
 void TinyRLConditionMonitor::begin(const FeatureProfile& prof) {
   prof_ = &prof;
   nf_ = prof.n_features;
   fs_.begin(nf_);
   buildNet();
+  resetSettle();
   prev_xn_ = ag::Matrix::Zeros(1, nf_);
   nm_mean_ = ag::Matrix::Zeros(1, nf_);
   nm_var_  = ag::Matrix::Ones(1, nf_);
@@ -106,6 +117,7 @@ void TinyRLConditionMonitor::startLearning() {
   }
   fs_.begin(nf_);
   buildNet();                                  // fresh weights + traces
+  resetSettle();
   obsnorm_.reset(new SampleMeanStd(1, nf_));
   prev_xn_.zero();
   has_prev_ = false;
@@ -124,6 +136,7 @@ void TinyRLConditionMonitor::startLearning() {
 void TinyRLConditionMonitor::factoryReset() {
   fs_.begin(nf_);
   buildNet();
+  resetSettle();
   obsnorm_.reset();
   score_ = last_surprise_ = 1.0f;
   step_ = fit_n_ = 0;
@@ -201,13 +214,56 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
     }
   }
 
+  // 1b) settle gate: transitions never train, never alarm, never ask
+  // (user requirement 2026-11-15: decide only on settled states). See
+  // node_config.h for the rule. Volatile warmup ~20 s after arm/resume.
+  if (fs_.armed()) {
+    if (has_prev_rel_) {
+      float motion = 0.0f;
+      for (int f = 0; f < nf_; ++f) {
+        float d = fabsf(fs_.rel(f, raw[f]) - prev_rel_[f]);
+        if (d > motion) motion = d;
+      }
+      mot_fast_ += cfg::SETTLE_FAST_EMA * (motion - mot_fast_);
+      mot_slow_ += cfg::SETTLE_SLOW_EMA * (motion - mot_slow_);
+      calm_ = (mot_fast_ <= cfg::SETTLE_MARGIN * mot_slow_) ? calm_ + 1 : 0;
+      settled_ = calm_ >= cfg::SETTLE_CALM_N;
+    }
+    for (int f = 0; f < nf_; ++f) prev_rel_[f] = fs_.rel(f, raw[f]);
+    has_prev_rel_ = true;
+  }
+  bool was_settled = prev_settled_;
+  prev_settled_ = settled_;
+  if (!theta_ready_) settled_ = true;   // baseline commissioning runs on a
+                                        // settled machine (procedure)
+  out.settled = settled_;
+
+  // regime entry: a new stable state has begun -> drop optimizer scale
+  // state. A stale leaky-max from the previous regime throttles the
+  // re-adaptation every regime change needs (measured as the post-label
+  // stall, run-155729, 2026-11-15). Traces die naturally within a few
+  // steps; vmax_ decays with beta ~ 1 and must be cleared.
+  if (theta_ready_ && settled_ && !was_settled) onWorldChange();
+
+  // library match (any kind) at the quiet radius: shared by the training
+  // gate and the B-rule (fs_ must be armed for rel())
+  int km = (lib_ && fs_.armed())
+               ? lib_->match(last_raw_, space(), cfg::QUIET_Q) : -1;
+
   // 2) TinyRL observation: running z-scores while fitting, frozen after
   ag::Matrix x(1, nf_);
   memcpy(x.data(), raw, nf_ * sizeof(float));
   ag::Matrix xn = theta_ready_ ? frozenNorm(x) : welfordZScore(*obsnorm_, x);
 
-  // 3) one-step prediction + bounded update (StreamQ update() pattern,
-  //    minus the action: reward = -surprise, maximize it)
+  // 3) one-step prediction + gated update (StreamQ update() pattern,
+  //    minus the action: reward = -surprise, maximize it). The forward
+  //    pass and surprise run every step so the score stays live through
+  //    transitions; the WEIGHT UPDATE is gated:
+  //      - mid-transition (unsettled): never (settle gate, 2026-11-15)
+  //      - unknown regime (no library match): never - a novel condition
+  //        keeps alarming until it is named (user policy 2026-11-15)
+  //      - pre-theta (CAL/FIT): always (baseline commissioning)
+  bool update = !theta_ready_ || (settled_ && km >= 0);
   if (has_prev_) {
     ag::Tensor s(prev_xn_, false);
     ag::Tensor sn(xn, false);
@@ -218,9 +274,22 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
     ag::Tensor reward = -se;                    // backward on -se:
     reward.backward();                          // grads = -d(se)/d(theta)
     float surprise = se.item();
-    opt_.step(-surprise, /*reset=*/false);      // delta = -surprise < 0
-    reward.clear_graph();                       // -> descent on surprise,
-    last_surprise_ = surprise;                  // bounded by kappa rule
+    if (update && theta_ready_) {
+      // novelty-modulated rate (user requirement 2026-11-15): full speed
+      // while surprise is high against its own slow baseline (new regime),
+      // a small floor at the baseline (stability), never zero (slow drift
+      // keeps creeping the baseline and stays trackable)
+      float base = fmaxf(sr_base_, 10.0f * cfg::SCORE_FLOOR);
+      float frac = (surprise - base) / (cfg::NOVELTY_K * base);
+      if (frac > 1.0f) frac = 1.0f;
+      if (frac < cfg::LR_MIN_FRAC) frac = cfg::LR_MIN_FRAC;
+      opt_.set_lr(cfg::MONITOR_LR * frac);
+    }
+    if (update) opt_.step(-surprise, /*reset=*/false);  // delta < 0 ->
+    reward.clear_graph();                       //    descent on surprise
+    if (theta_ready_)
+      sr_base_ += cfg::NOVELTY_EMA * (surprise - sr_base_);
+    last_surprise_ = surprise;
   } else {
     last_surprise_ = 1.0f;
   }
@@ -244,6 +313,7 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
         obsnorm_.reset();                       // freeze preprocessing
         theta_ready_ = true;
         learning_ = false;
+        sr_base_ = fit_mu_;   // novelty baseline = the fit-window floor
         Serial.printf("[RL] theta=%.2f (mu=%.2f) - monitoring\n", theta_, fit_mu_);
       }
     }
@@ -259,8 +329,9 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
   // cross-regime confusion, not an anomaly. It counts as quiet and clears
   // an open alarm immediately; theta stays untouched. Fault-kind centroids
   // never quiet an alarm: a sustained real fault keeps alarming.
-  int km = lib_ ? lib_->match(last_raw_, space(), cfg::QUIET_Q) : -1;
-  if (km >= 0 && lib_->at(km).kind == COND_NORMAL) {
+  if (!settled_) {
+    lo_ = hi_ = 0;      // mid-transition: no alarm credit, no clear credit
+  } else if (km >= 0 && lib_->at(km).kind == COND_NORMAL) {
     lo_ = cfg::CLEAR_LO_N;  hi_ = 0;
   } else if (score_ > theta_)            { hi_++; lo_ = 0; }
   else if (score_ > 0.7f * theta_)       { hi_ = 0; lo_++; }
@@ -299,6 +370,7 @@ void TinyRLConditionMonitor::exportState(State& s) const {
   for (int f = 0; f < cfg::MAX_FEATURES; ++f) {
     s.fs_mu[f] = (f < nf_) ? fs_.mu(f) : 0;
     s.fs_unit[f] = (f < nf_) ? fs_.unit(f) : 0;
+    s.fs_anchor[f] = (f < nf_) ? fs_.anchor(f) : 0;
     s.fs_lo[f] = (f < nf_) ? fs_.lo(f) : 0;
     s.fs_hi[f] = (f < nf_) ? fs_.hi(f) : 0;
     s.nm_mean[f] = (f < nf_) ? nm_mean_(0, f) : 0;
@@ -310,6 +382,7 @@ void TinyRLConditionMonitor::exportState(State& s) const {
 
 bool TinyRLConditionMonitor::importState(const State& s) {
   if (!prof_ || nf_ <= 0 || nf_ > cfg::MAX_FEATURES) return false;
+  resetSettle();                        // motion history invalid across boot
   score_ = s.score; fit_mu_ = s.fit_mu; fit_m2_ = s.fit_m2; theta_ = s.theta;
   step_ = s.step;
   hi_ = s.hi; lo_ = s.lo;
@@ -323,6 +396,7 @@ bool TinyRLConditionMonitor::importState(const State& s) {
     for (int f = 0; f < nf_; ++f) {
       fs_.setMu(f, s.fs_mu[f]);
       fs_.setUnit(f, s.fs_unit[f]);
+      fs_.setAnchor(f, s.fs_anchor[f]);
       fs_.setRange(f, s.fs_lo[f], s.fs_hi[f]);
     }
     fs_.forceArmed(s.fs_armed != 0, s.fs_steps);
@@ -332,6 +406,7 @@ bool TinyRLConditionMonitor::importState(const State& s) {
     }
     obsnorm_.reset();
     learning_ = false;
+    sr_base_ = fmaxf(s.score, 10.0f * cfg::SCORE_FLOOR);   // novelty ref
   } else if (s.cal != 0) {
     // saved mid-learning: restarting CAL automatically beats v3's
     // "press 's' again" - the network keeps whatever it had learned.

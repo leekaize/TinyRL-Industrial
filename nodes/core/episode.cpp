@@ -12,6 +12,8 @@ void EpisodeManager::begin(const FeatureProfile* prof,
   prof_ = prof; lib_ = lib; dev_id_ = dev_id; fn_ = std::move(fn);
   open_ = false; n_ = 0; cond_[0] = 0;
   memset(sum_, 0, sizeof(sum_));
+  memset(rmean_, 0, sizeof(rmean_));
+  memset(rm2_, 0, sizeof(rm2_));
 }
 
 uint32_t EpisodeManager::duration(uint32_t now) const {
@@ -21,6 +23,15 @@ uint32_t EpisodeManager::duration(uint32_t now) const {
 void EpisodeManager::means(float* out) const {
   for (int f = 0; f < prof_->n_features; ++f)
     out[f] = n_ ? sum_[f] / (float)n_ : 0.0f;
+}
+
+void EpisodeManager::relMeans(float* out) const {
+  for (int f = 0; f < prof_->n_features; ++f) out[f] = rmean_[f];
+}
+
+void EpisodeManager::relStd(float* out) const {
+  for (int f = 0; f < prof_->n_features; ++f)
+    out[f] = n_ > 1 ? sqrtf(rm2_[f] / (float)(n_ - 1)) : 0.0f;
 }
 
 size_t EpisodeManager::summary(char* out, size_t cap, uint32_t now) const {
@@ -45,7 +56,12 @@ void EpisodeManager::open(const float* x, const FeatureSpace& fs, uint32_t now) 
   open_ = true;
   t0_ = now;
   n_ = 1;
-  for (int f = 0; f < prof_->n_features; ++f) sum_[f] = x[f];
+  for (int f = 0; f < prof_->n_features; ++f) {
+    sum_[f] = x[f];
+    float r = fs.rel(f, x[f]);
+    rmean_[f] = r;
+    rm2_[f] = 0.0f;
+  }
   int m = lib_ ? lib_->match(x, fs, cfg::QUIET_Q) : -1;
   // pre-name ONLY on a confident match (QUIET_Q): at a loose radius the
   // start-transient centroid swallowed real faults and recorded them
@@ -63,10 +79,18 @@ void EpisodeManager::open(const float* x, const FeatureSpace& fs, uint32_t now) 
   Serial.printf("[EP] open cond=%s\n", cond_);
 }
 
-void EpisodeManager::feed(const float* x) {
+void EpisodeManager::feed(const float* x, const FeatureSpace& fs) {
   if (!open_) return;
   n_++;
-  for (int f = 0; f < prof_->n_features; ++f) sum_[f] += x[f];
+  for (int f = 0; f < prof_->n_features; ++f) {
+    sum_[f] += x[f];
+    // Welford in the condition space: rmean is the centroid a label
+    // stores, rm2 the spread its matching units come from
+    float r = fs.rel(f, x[f]);
+    float d = r - rmean_[f];
+    rmean_[f] += d / (float)n_;
+    rm2_[f] += d * (r - rmean_[f]);
+  }
 }
 
 void EpisodeManager::close(const char* how, const FeatureSpace& fs, uint32_t now) {
