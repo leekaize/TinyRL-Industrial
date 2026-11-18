@@ -114,8 +114,8 @@ def main() -> None:
         left = pendings(st)
         print(f"5. pendings left after discard: {left} "
               f"(node {node}: {st['pending'][node]})")
-        # the probe discards only node {node}'s batch: the sibling's ask
-        # is untouched by design
+        # the probe discards only node {node}'s batch: the other node's
+        # ask is untouched by design (batch ids are per node)
         ok = not st["pending"][node]
 
         print("PROBE PASS" if ok else "PROBE FAIL")

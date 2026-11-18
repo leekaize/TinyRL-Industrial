@@ -42,13 +42,17 @@ An episode with `condition_id: "unknown"` is the node ASKING for a label.
    - label = short snake_case slug; reuse an existing slug across nodes for
      the same physical phenomenon (this is what grows the knowledge graph).
    - late labels are fine: the batch survives reboots, so you may gather
-     context (sibling evidence, maintenance log) before answering.
+     context (maintenance log, the machine's other published events)
+     before answering.
    - a batch that no longer means anything (the state passed, the evidence
      is gone): `{"action":"discard","batch":"P0001"}` - the model is
      untouched and the node will ask again next occurrence.
    - faults are named WITH their operating point (compound slug,
      e.g. speed_1_imbalance): the same fault at a different setpoint is a
      different library condition.
+   - one physical event usually opens asks on several nodes of the same
+     machine: answer every open batch of that machine with the SAME slug;
+     each node builds its centroid from its own stored batch.
 4. If the episode was noise (sensor glitch, transient, operator action):
    `{"action":"normal"}` - the node desensitises itself (theta +10%).
 5. If the human should decide (rare, first occurrence, high impact): say so
@@ -74,11 +78,12 @@ An episode with `condition_id: "unknown"` is the node ASKING for a label.
 
 1. Keep a graph: (node) -[reported condition]-> (condition slug), and
    (condition slug) -[co-occurs/plausible-cause]-> (condition slug).
-2. When node A opens episode with slug X, check sibling nodes on the same
-   mechanical chain: if a correlated node goes 'ok'→elevated confidence,
-   note the edge; if the same slug opens on 2+ related nodes, escalate to
-   maintenance directly with BOTH summaries - that pattern is usually a
-   shared root cause (belt, coupling, power supply, process upstream).
+2. When node A reports condition X, check the published State/* of the
+   other nodes on the same machine for the same window (nodes never
+   consult each other; the correlation is yours): if the same slug opens
+   on 2+ related nodes, escalate to maintenance directly with BOTH
+   summaries - that pattern is usually a shared root cause (belt,
+   coupling, power supply, process upstream).
 3. Reinforcement: when a confirmed maintenance action matches a slug,
    append the finding to the condition's notes; over time this becomes the
    site's fault-mode encyclopedia.

@@ -67,7 +67,7 @@ void EpisodeManager::open(const float* x, const FeatureSpace& fs, uint32_t now) 
   // start-transient centroid swallowed real faults and recorded them
   // under a normal's name with no ask (bench finding, 2026-11-14).
   // Ambiguous openings stay "unknown" and ask - that is the design: the
-  // collective gives evidence, the operator decides.
+  // operator (or agent) decides, no node-to-node consultation.
   snprintf(cond_, sizeof(cond_), "%s", m >= 0 ? lib_->at(m).id : "unknown");
   kind_ = (m >= 0) ? lib_->at(m).kind : COND_FAULT;
 

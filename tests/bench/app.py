@@ -25,7 +25,7 @@ Run:
             [--source bench|serial]
 
 API (used by the page, also curl-able):
-    GET  /state                full snapshot (series + asks + verdicts)
+    GET  /state                full snapshot (series + asks + pending)
     GET  /debug                counters for stall diagnosis
     POST /label                {"node", "slug", "action": label|normal|fault,
                                 "kind": normal|fault (label only)}
@@ -84,7 +84,7 @@ def build() -> None:
 
 
 class Bench:
-    """Drives the binary: pacing, parsing, ask/verdict/hold state."""
+    """Drives the binary: pacing, parsing, ask/hold state."""
 
     def __init__(self, profile, steps: int, nodes: int, autoagent: bool,
                  mode: str = "two-way"):
@@ -102,7 +102,6 @@ class Bench:
         self.ask_serial = 0
         self.ask_counted = [False] * nodes
         self.dismissed = -1
-        self.verdict_count = 0
         self.done = False
         self.lock = threading.Lock()
         self.events = []
@@ -110,7 +109,6 @@ class Bench:
         self.pending = [[] for _ in range(nodes)]
         self.libs = [[] for _ in range(nodes)]
         self.ask_serials = [-1] * nodes
-        self.verdicts = [None] * nodes
         self.machine = "op_stopped"           # boot truth before META/M
         self.context = "op_stopped"           # setpoint the machine runs at
         self.marks = []                       # every machine event (step, name)
@@ -143,11 +141,6 @@ class Bench:
                        "ep": int(t[6]), "cond": t[7], "lib": int(t[8]),
                        "feat": [float(v) for v in t[9:]]}
                 self.q.put(("S", row["node"], row))
-            elif line.startswith("VERDICT "):
-                t = line.split(maxsplit=3)
-                self.q.put(("VERDICT", int(t[1]),
-                            {"verdict": t[2],
-                             "text": t[3] if len(t) > 3 else ""}))
             elif line.startswith("PEND "):
                 t = line.split(maxsplit=2)
                 node = int(t[1])
@@ -196,12 +189,6 @@ class Bench:
                             self.ask_counted[node] = True
                     else:
                         self.ask_counted[node] = False
-                elif kind == "VERDICT":
-                    self.verdict_count += 1
-                    v = dict(payload)
-                    v["step"] = max((r["step"] for r in self.rows[node]),
-                                    default=0)
-                    self.verdicts[node] = v
                 elif kind == "PEND":
                     self.pending[node] = payload
                 elif kind == "LIBC":
@@ -306,7 +293,6 @@ class Bench:
             with open(out, "w") as f:
                 meta = {"type": "meta", "steps_total": self.steps_total,
                         "mode": self.mode,
-                        "verdicts": self.verdict_count,
                         "node_types": list(self.node_types or []),
                         "feature_names": {t: [n for n, _ in FEATURES[t]]
                                           for t in self.node_types or []},
@@ -338,8 +324,7 @@ class Bench:
                 if rows and rows[-1]["ep"] == 1 \
                         and rows[-1]["cond"] == "unknown":
                     ask.append({"node": i, "cond": rows[-1]["cond"],
-                                "step": rows[-1]["step"],
-                                "verdict": self.verdicts[i]})
+                                "step": rows[-1]["step"]})
             nodes = []
             for i, rows in enumerate(self.rows):
                 ntype = (self.node_types[i]
@@ -521,9 +506,7 @@ def main() -> None:
         ev = [t for _, t in bench.events]
         print(f"ci: asks={sum(1 for t in ev if 'open cond=unknown' in t)} "
               f"labels={sum(1 for t in ev if '[FB]' in t and chr(39) + 'label' + chr(39) in t)} "
-              f"shares={sum(1 for t in ev if '[SHARE]' in t)} "
-              f"autos={sum(1 for t in ev if '[AUTO]' in t)} "
-              f"verdicts={bench.verdict_count}")
+              f"shares={sum(1 for t in ev if '[SHARE]' in t)}")
         for t in [t for _, t in bench.events if t.startswith("DONE")]:
             print("  ", t)
         return

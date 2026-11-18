@@ -48,13 +48,6 @@ public:
   bool        episodeOpen() const;
   uint32_t    stepCount() const;
   uint32_t    libSize() const;
-  void        episodeMeans(float* out) const;   // raw units, open episode
-
-  // multi-node label sharing: another node's episode means (raw) mapped
-  // through THIS node's own frozen feature space; kind travels with the slug
-  int         shareLabel(const char* slug, const float* mean_raw,
-                         CondKind kind);
-  int         libMatch(const float* raw) const;
   const char* libName(int idx) const;
 
   // host tools + dashboards: pending batches (ids + sample count + step)

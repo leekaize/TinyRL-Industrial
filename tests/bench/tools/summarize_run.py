@@ -14,7 +14,7 @@ Metrics:
   run-on episode from an earlier fault, not an identification.
   Reported for the fault's OWNING sensing node and the partner node separately: a fleet fault is owned
   by one node type (imbalance -> vib_adxl, phase_loss -> vfd_g100);
-  the partner's alarm is corroboration, its miss is expected.
+  a partner alarm in the same window is cross-modal support, its miss is expected.
 - false alarm: alarm span starting while machine truth is not a fault
 - asks opened: EV "open cond=unknown" count. In node-only mode these
   never leave the node, so upstream asks = 0 there

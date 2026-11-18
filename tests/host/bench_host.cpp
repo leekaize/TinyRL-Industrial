@@ -11,19 +11,12 @@
 // The user's loop: inject a fault -> the nodes catch it -> label the ask
 // -> inject again -> recognised locally, no ask.
 //
-// Collective layer ("the nodes work together"):
-//   - when a node opens an UNKNOWN condition, the system consults the
-//     siblings and emits a verdict line:
-//       known        a same-profile sibling's library matches the means
-//       corroborated a sibling is ALARMING at the same time (real fault)
-//       unconfirmed  siblings are alive and all report normal - their
-//                    "normal" may be blindness to this modality, so this
-//                    is evidence, NOT a conclusion; the user decides
-//       unconsulted  no siblings (single node) or none ready
-//   - a user label is applied to the asking node and SHARED: siblings
-//     with an open unknown ask get the same slug (each builds its own
-//     centroid from its own episode means); same-profile siblings
-//     additionally get the centroid means mapped through their own space.
+// Label fan-out ("the nodes work together"):
+//   - a user or agent label is applied to the asking node and SHARED:
+//     every node of the same machine with an open unknown ask (the
+//     same-timeframe event) gets the same slug, each building its own
+//     centroid from its own episode means; batch ids are per node and
+//     never cross nodes.
 //
 // Stdin protocol (the web server is the pacing brain):
 //   s                       advance every node by ONE monitor step (1 s)
@@ -34,7 +27,7 @@
 // Per monitor step: one state line PER node:
 //   S <node> <step> <phase> <score> <theta> <ep_open> <cond> <lib> f0 ...
 // plus M <state> whenever the machine state changes. Event lines:
-// [RL]/[EP]/[FB]/[LIB]/[SHARE]/[AUTO]/VERDICT/[MACHINE].
+// [RL]/[EP]/[FB]/[LIB]/[SHARE]/[MACHINE].
 // META + READY open the stream; DONE closes it.
 //
 // Env:
@@ -259,7 +252,6 @@ struct Rig {
   ScriptedSensor sensor;
   SensorNodeApp  app;
   long last_step = 0;
-  bool consulted = false;      // verdict emitted for the current ask
   // scripted-agent state (CI mode only)
   int  ask_age = 0;
   bool asked = false;
@@ -306,8 +298,9 @@ static void autoagent(Rig& r, int idx) {
       }
       r.app.applyFeedback(j);
       r.asked = true;
-      // CI sharing: sibling with an open unknown ask gets the same slug,
-      // but ITS OWN batch id (ids are per node - never cross nodes)
+      // CI fan-out: a node of the same machine with an open unknown ask
+      // gets the same slug, but ITS OWN batch id (ids are per node -
+      // never cross nodes)
       for (int k = 0; k < n_nodes; ++k) {
         if (k == idx) continue;
         if (rigs[k].app.episodeOpen()
@@ -321,7 +314,7 @@ static void autoagent(Rig& r, int idx) {
                    "\"kind\":\"%s\",\"by\":\"agent\",\"batch\":\"%s\"}",
                    lb, kd, bid2);
           rigs[k].app.applyFeedback(j2);
-          printf("[SHARE] '%s' -> node %d (corroborated ask)\n", lb, k);
+          printf("[SHARE] '%s' -> node %d (same-machine ask)\n", lb, k);
         }
       }
     } else {
@@ -330,62 +323,6 @@ static void autoagent(Rig& r, int idx) {
   } else {
     r.ask_age = 0;
   }
-}
-
-// ---- collective layer --------------------------------------------------
-// Consult the siblings for the asking node's open unknown episode and
-// emit ONE verdict line per ask. The verdict arms the UI; it never
-// auto-resolves row 3 (siblings-normal is evidence, not a conclusion).
-static void consult(int idx) {
-  Rig& r = rigs[idx];
-  float means[8];
-  r.app.episodeMeans(means);
-  const FeatureProfile& myprof = r.sensor.profile();
-
-  // 1) same-profile sibling library match -> the collective knows it
-  for (int j = 0; j < n_nodes; ++j) {
-    if (j == idx) continue;
-    if (&rigs[j].sensor.profile() != &myprof) continue;
-    int m = rigs[j].app.libMatch(means);
-    if (m >= 0) {
-      const char* slug = rigs[j].app.libName(m);
-      char j_[96];
-      snprintf(j_, sizeof(j_),
-               "{\"action\":\"label\",\"label\":\"%s\",\"by\":\"agent-net\"}",
-               slug);
-      printf("[AUTO] node %d informed by node %d's library ('%s')\n",
-             idx, j, slug);
-      r.app.applyFeedback(j_);
-      print_state();
-      return;
-    }
-  }
-
-  // 2) corroboration: is any sibling ALARMING right now?
-  int alarmers = 0;
-  char states[128] = "";
-  size_t o = 0;
-  bool any_ready = false;
-  for (int j = 0; j < n_nodes; ++j) {
-    if (j == idx) continue;
-    bool ready = strcmp(rigs[j].app.phase(), "cal") != 0
-              && strcmp(rigs[j].app.phase(), "fit") != 0
-              && strcmp(rigs[j].app.phase(), "idle") != 0;
-    if (!ready) continue;
-    any_ready = true;
-    bool al = strcmp(rigs[j].app.phase(), "alarm") == 0;
-    if (al) alarmers++;
-    o += snprintf(states + o, sizeof(states) - o, "node%d=%s ", j,
-                  al ? "ALARMING" : "normal");
-  }
-  if (!any_ready) {
-    printf("VERDICT %d unconsulted no-ready-siblings\n", idx);
-  } else if (alarmers > 0) {
-    printf("VERDICT %d corroborated %s\n", idx, states);
-  } else {
-    printf("VERDICT %d unconfirmed %s\n", idx, states);
-  }
-  r.consulted = true;
 }
 
 static void print_state() {
@@ -452,14 +389,6 @@ static void step_all(bool autoagent_on) {
       snprintf(rigs[i].pend_sig, sizeof(rigs[i].pend_sig), "%s", sig);
     }
   }
-  for (int i = 0; i < n_nodes; ++i) {
-    if (rigs[i].app.episodeOpen()
-        && strcmp(rigs[i].app.conditionId(), "unknown") == 0) {
-      if (!rigs[i].consulted) consult(i);
-    } else {
-      rigs[i].consulted = false;   // new ask -> consult again
-    }
-  }
 }
 
 // learn command: commission on the STOPPED machine (2026-11-15)
@@ -524,15 +453,17 @@ static void set_machine(const char* name) {
 static void do_label(int idx, const char* slug, const char* json) {
   bool open = rigs[idx].app.episodeOpen();
   rigs[idx].app.applyFeedback(json);
-  // only LABEL actions share to siblings; discard/batch-foreign commands
-  // must never turn into sibling labels (a '-' slug would learn garbage)
+  // only LABEL actions fan out to the machine's other nodes;
+  // discard/batch-foreign commands must never become labels (a '-'
+  // slug would learn garbage)
   bool is_label = strstr(json, "\"action\":\"label\"") != nullptr;
   if (!open || !is_label) { print_state(); return; }
   for (int j = 0; j < n_nodes; ++j) {
     if (j == idx) continue;
-    // a sibling stuck in the SAME unknown ask (corroborated) gets the
-    // slug applied to its own episode, WITHOUT the asker's batch id:
-    // ids are per node, and each node learns from its own means
+    // a node of the same machine stuck in the SAME unknown ask (the
+    // same-timeframe event) gets the slug applied to its own episode,
+    // WITHOUT the asker's batch id: ids are per node, and each node
+    // learns from its own means
     if (rigs[j].app.episodeOpen()
         && strcmp(rigs[j].app.conditionId(), "unknown") == 0) {
       CondKind k = strstr(json, "\"kind\":\"normal\"") ? COND_NORMAL
@@ -543,24 +474,8 @@ static void do_label(int idx, const char* slug, const char* json) {
                "\"by\":\"user\"}",
                slug, k == COND_NORMAL ? "normal" : "fault");
       rigs[j].app.applyFeedback(j2);
-      printf("[SHARE] '%s' -> node %d (corroborated ask)\n", slug, j);
-      continue;
+      printf("[SHARE] '%s' -> node %d (same-machine ask)\n", slug, j);
     }
-    // same-profile sibling: share the asking node's episode means as a
-    // centroid mapped through the sibling's own frozen space; the kind
-    // travels with the slug (parsed from the label JSON)
-    if (slug[0] &&
-        &rigs[j].sensor.profile() == &rigs[idx].sensor.profile()) {
-      float means[8];
-      rigs[idx].app.episodeMeans(means);
-      CondKind k = strstr(json, "\"kind\":\"normal\"") ? COND_NORMAL
-                                                       : COND_FAULT;
-      int s = rigs[j].app.shareLabel(slug, means, k);
-      printf("[SHARE] centroid '%s' (%s) -> node %d (lib idx %d)\n",
-             slug, k == COND_NORMAL ? "normal" : "fault", j, s);
-    }
-    // mixed-profile siblings: slug only (vocabulary); centroids are
-    // meaningless across feature spaces
   }
   print_state();   // the ask may be resolved now - un-hold the server
 }

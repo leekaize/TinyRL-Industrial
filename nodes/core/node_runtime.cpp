@@ -48,23 +48,6 @@ bool SensorNodeApp::episodeOpen() const { return ep_.isOpen(); }
 uint32_t SensorNodeApp::stepCount() const { return mon_.steps(); }
 uint32_t SensorNodeApp::libSize() const { return lib_.size(); }
 
-void SensorNodeApp::episodeMeans(float* out) const { ep_.means(out); }
-
-int SensorNodeApp::shareLabel(const char* slug, const float* mean_raw,
-                              CondKind kind) {
-  // the asker's raw means, mapped through THIS node's own frozen space;
-  // no spread travels with a share, so units keep the CAL fallback until
-  // the sibling labels the condition from its own batch
-  float rmean[cfg::MAX_FEATURES];
-  for (int f = 0; f < mon_.space().nFeatures(); ++f)
-    rmean[f] = mon_.space().rel(f, mean_raw[f]);
-  return lib_.label(slug, rmean, nullptr, "shared", kind);
-}
-
-int SensorNodeApp::libMatch(const float* raw) const {
-  return lib_.match(raw, mon_.space());
-}
-
 const char* SensorNodeApp::libName(int idx) const {
   return (idx >= 0 && idx < lib_.size()) ? lib_.at(idx).id : "";
 }

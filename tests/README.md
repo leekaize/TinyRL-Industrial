@@ -179,29 +179,18 @@ and the condition libraries live.
 2. Start the motor / change setpoint / inject a fault. Transitions are
    gated: nodes decide only on settled states. A settled unknown stores a
    pending batch (`P0001...`) and opens an ask; the run holds.
-3. Answer the ask: one label resolves every pending ask - it lands on the
-   asked node's STORED batch (settled data, works late) and each sibling
-   relabels its own episode and consumes its own batch. Faults are named
-   WITH their operating point (`speed_1_imbalance`). The card's pending
-   list can label/discard any batch by id at any time.
+3. Answer the ask: one label resolves every pending ask of the machine -
+   it lands on the asked node's STORED batch (settled data, works late)
+   and every node with an open ask relabels its own episode and consumes
+   its own batch. Faults are named WITH their operating point
+   (`speed_1_imbalance`). The card's pending list can label/discard any
+   batch by id at any time.
 4. Re-run the same state: matched locally, no ask - that count is the
    payoff metric.
 
-Collective verdicts shown with sibling evidence:
-
-- **known** - a same-profile sibling's library already matches: resolved
-  silently, no ask
-- **corroborated** - a sibling is alarming at the same time: one label
-  resolves both nodes, each learns from its own data
-- **unconfirmed** - siblings report normal. This is evidence, not a
-  conclusion: either an operating-point change (name it so the node
-  learns it) or a fault the sibling cannot see
-- **unconsulted** - single node (`--nodes 1 --profile g100|vib`), plain
-  ask
-
-A label is shared fleet-wide as vocabulary; centroids stay per node and
-per profile (same-profile siblings additionally get the means mapped
-through their own frozen space).
+A label is shared across the machine's nodes as vocabulary; every
+centroid comes from the node's own batch - no means or centroids cross
+nodes.
 
 ### Modes
 

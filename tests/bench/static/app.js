@@ -27,13 +27,6 @@ function discard(node, batch) { post("/discard", {node, batch}); }
 function inject(ev) { post("/machine", {ev}); }
 
 const FAULT_STATES = ["imbalance", "phase_loss"];
-const WHY = {
-  known: "a sibling library already knows this condition",
-  corroborated: "a sibling node is ALARMING at the same time - likely a real fault",
-  unconfirmed: "siblings report normal. This may be an operating-point change " +
-               "(name it so the node learns it) or a fault the sibling cannot see",
-  unconsulted: "no sibling evidence available (single node or not ready)",
-};
 
 // condition vocabulary (2026-11-15): normals are op_stopped / speed_1 /
 // speed_2, faults compound with the running setpoint (speed_1_imbalance)
@@ -44,26 +37,23 @@ function truthSlug(st) {
                                      : st.machine.replace(/^op_/, "");
 }
 
-// ONE popup for every pending ask: one label resolves all of them (the
-// collective shares it - each node relabels its own episode and consumes
-// its own stored batch). The label lands on the asked node's STORED batch
-// when one exists (settled data, works late); otherwise the live episode.
+// ONE popup for every pending ask: one label resolves all of them. The
+// bench applies the same slug to every node of the machine with an open
+// ask (the same-timeframe event); each node relabels its own episode and
+// consumes its own stored batch. The label lands on the asked node's
+// STORED batch when one exists (settled data, works late); otherwise the
+// live episode.
 function askPanelHTML(st) {
-  const lines = st.ask.map(a => {
-    const v = a.verdict || {verdict: "unconsulted", text: ""};
-    return `<b>node ${a.node}</b> step ${a.step}: <b>${v.verdict}</b>` +
-      (v.text ? ` <span class="ev-line">consulted: ${v.text}</span>` : "");
-  }).join(" &nbsp;|&nbsp; ");
+  const lines = st.ask.map(a =>
+    `<b>node ${a.node}</b> step ${a.step}`).join(" &nbsp;|&nbsp; ");
   const n0 = st.ask[0].node;
-  const why = WHY[(st.ask[0].verdict || {}).verdict] || "";
   const pb = (st.pending[n0] || [])[0];
   const bid = pb ? pb.id : "";
   const via = bid
     ? `batch <b>${bid}</b> (n=${pb.n} settled samples)`
     : `the live episode (no stored batch yet)`;
   return `<b>${st.ask.length} node(s) opened an UNKNOWN condition</b> - ${lines}` +
-    `<br>${why}` +
-    `<br>one label resolves every pending ask via ${via}: ` +
+    `<br>one label resolves every pending ask of the machine via ${via}: ` +
     `<input id="askslug" value="${truthSlug(st)}" size="26"> ` +
     `<button onclick="label(${n0},document.getElementById('askslug').value,'label','normal','${bid}')">label as normal</button>` +
     `<button onclick="label(${n0},document.getElementById('askslug').value,'label','fault','${bid}')">label as fault</button>` +
