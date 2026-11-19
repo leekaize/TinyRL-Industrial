@@ -62,16 +62,16 @@ FEATURES = {
                  ("b4", "g2"), ("fmax", "Hz")],
 }
 
-SRC_FILES = [
-  "stub_impl.cpp", "node_runtime.cpp", "uns_messaging.cpp", "console.cpp",
-  "tinyrl_monitor.cpp", "condition_library.cpp", "episode.cpp",
-  "pending_store.cpp", "persistence.cpp", "bench_host.cpp",
-]
-
-
 def build() -> None:
-    srcs = [STUBS / SRC_FILES[0]] + [CORE / f for f in SRC_FILES[1:9]] \
-        + [HOST / SRC_FILES[9]]
+    # NOTE: machine_model.hpp (the generator) must stay in this list - a
+    # header-only edit has to trigger a rebuild or the web bench silently
+    # runs the old machine model (2026-11-19)
+    srcs = [STUBS / "stub_impl.cpp"] \
+        + [CORE / f for f in ["node_runtime.cpp", "uns_messaging.cpp",
+                              "console.cpp", "tinyrl_monitor.cpp",
+                              "condition_library.cpp", "episode.cpp",
+                              "pending_store.cpp", "persistence.cpp"]] \
+        + [HOST / "bench_host.cpp", HOST / "machine_model.hpp"]
     newest = max(os.path.getmtime(p) for p in srcs)
     if BIN.exists() and os.path.getmtime(BIN) >= newest:
         return
@@ -163,6 +163,11 @@ class Bench:
                 t = line.split()
                 self.q.put(("LIBU", int(t[1]),
                             {"slug": t[2], "u": [float(v) for v in t[3:]]}))
+            elif line.startswith("LIBX "):
+                t = line.split()
+                self.q.put(("LIBX", int(t[1]),
+                            {"slug": t[2], "theta": float(t[3]),
+                             "anchor": [float(v) for v in t[4:]]}))
             elif line.startswith("DONE"):
                 self.q.put(("EV", 10 ** 9, line))
             elif line:
@@ -192,11 +197,26 @@ class Bench:
                 elif kind == "PEND":
                     self.pending[node] = payload
                 elif kind == "LIBC":
-                    self.libs[node].append(payload)
+                    # upsert by slug: every 'K' dump re-sends the whole
+                    # library - appending would duplicate legend entries
+                    # and centroid lines in the figures (2026-11-19)
+                    lst = self.libs[node]
+                    for k, e in enumerate(lst):
+                        if e["slug"] == payload["slug"]:
+                            lst[k] = payload
+                            break
+                    else:
+                        lst.append(payload)
                 elif kind == "LIBU":
                     for entry in reversed(self.libs[node]):
                         if entry["slug"] == payload["slug"]:
                             entry["u"] = payload["u"]
+                            break
+                elif kind == "LIBX":
+                    for entry in reversed(self.libs[node]):
+                        if entry["slug"] == payload["slug"]:
+                            entry["theta"] = payload["theta"]
+                            entry["anchor"] = payload["anchor"]
                             break
                 elif kind == "META":
                     t = payload.split()
@@ -205,11 +225,19 @@ class Bench:
                     self.node_types = [x.split("=", 1)[1] for x in t
                                        if re.match(r"node\d+=", x)]
                 elif kind == "MACHINE":
+                    # "M <step> <name> <ctx>" (new) or "M <name> <ctx>" (old):
+                    # the binary stamps the exact step the truth applies
+                    # from; fall back to max-seen step for old formats
                     parts = payload.split()
-                    self.machine = parts[0]
-                    self.context = parts[1] if len(parts) > 1 else parts[0]
-                    step = max((r["step"] for rows in self.rows
-                                for r in rows), default=0)
+                    if len(parts) >= 3 and parts[0].isdigit():
+                        step = int(parts[0])
+                        self.machine = parts[1]
+                        self.context = parts[2]
+                    else:
+                        step = max((r["step"] for rows in self.rows
+                                    for r in rows), default=0)
+                        self.machine = parts[0]
+                        self.context = parts[1] if len(parts) > 1 else parts[0]
                     self.marks.append([step, self.machine])
                 elif kind == "EV":
                     step = max((r["step"] for rows in self.rows for r in rows),
@@ -348,6 +376,8 @@ class Bench:
                         "steps": [r["step"] for r in rows],
                         "score": [r["score"] for r in rows],
                         "theta": [r["theta"] for r in rows],
+                        "cond": [r["cond"] for r in rows],
+                        "phase": [r["phase"] for r in rows],
                         "feat": [[r["feat"][k] for r in rows]
                                  for k in range(len(feats))],
                     },
@@ -364,6 +394,11 @@ class Bench:
                 "holding": bool(ask) and self.ask_serial != self.dismissed
                            and self.mode != "node-only",
                 "nodes": nodes,
+                # per-node condition library (slug/kind/own score band) for
+                # the effective-threshold chart line
+                "libs": [[{"slug": e["slug"], "kind": e.get("kind"),
+                           "theta": e.get("theta")} for e in self.libs[i]]
+                         for i in range(self.n_nodes)],
                 "events": [list(e) for e in self.events[-15:]],
             }
 

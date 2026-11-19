@@ -7,12 +7,15 @@
 // Scenario (baselines in raw units; the 0..1 condition space saturates
 // at the CAL range edges, which is what separates matched from unmatched):
 //   0) console 's': CAL + FIT at NORMAL (full sensor noise) -> theta
-//   1) step to L1 = NORMAL + 3 sigma (smooth, fault-like): z-jump alarms
+//   1) step to L1 = NORMAL + 6 sigma (single step): z-jump alarms
 //      -> console 'f belt_slip' -> library = 1, centroid at L1
+//      (6 sigma, not 3: CAL-fallback match units are one CAL sigma, so
+//      QUIET_Q=3 sits exactly at 3 sigma - a 3-sigma step flickers on the
+//      quiet boundary instead of clearly leaving the radius, 2026-11-19)
 //   2) stay at L1: the net trains on the LABELED fault regime (2026-11-15
 //      policy), adapts, alarm clears, quiet steps MATCH the centroid
 //      (distance ~ noise only) -> tripwire silent (qum=0)
-//   3) step to L2 = NORMAL - 3 sigma (smooth): matches NOTHING -> the
+//   3) step to L2 = NORMAL - 6 sigma (single step): matches NOTHING -> the
 //      net NEVER trains on the unknown regime, so it never adapts and
 //      the alarm never clears (2026-11-15 policy: a novel condition
 //      keeps alarming until it is named). The tripwire stays silent:
@@ -98,16 +101,19 @@ int main() {
                   "ssid", "pass", "127.0.0.1", 1883};
   app.begin(sensor, id);
 
-  const float norm[4] = {3.0f, 0.25f, 585.0f, 45.0f};     // NORMAL (CAL mean)
-  const float lvHi[4] = {3.35f, 0.46f, 585.0f, 55.4f};    // NORMAL + 3 sigma
-  const float lvLo[4] = {2.65f, 0.04f, 585.0f, 34.6f};    // NORMAL - 3 sigma
+  const float norm[4]  = {3.0f, 0.25f, 585.0f, 45.0f};    // NORMAL (CAL mean)
+  const float sig[4]   = {0.2f, 0.12f, 4.0f, 6.0f};       // CAL noise scales
+  const float lvHi[4]  = {3.0f + 6 * sig[0], 0.25f + 6 * sig[1],
+                          585.0f, 45.0f + 6 * sig[3]};    // NORMAL + 6 sigma
+  const float lvLo[4]  = {3.0f - 6 * sig[0], 0.25f - 6 * sig[1],
+                          585.0f, 45.0f - 6 * sig[3]};    // NORMAL - 6 sigma
 
   // ---- phase 0: learn NORMAL (full noise) ------------------------------
   Serial.feed("s\n");
   app.tick();
   runFeeds(app, sensor, 500);                    // CAL (300) + FIT (120) + margin
 
-  // ---- step to lvHi (smooth) -> ALARM -> label -------------------------
+  // ---- step to lvHi (single step) -> ALARM -> label ---------------------
   for (int f = 0; f < 4; ++f) { sensor.base[f] = lvHi[f]; }
   sensor.nscale = 0.2f;                          // steady (fault-like) regime
   runFeeds(app, sensor, 40);                     // alarm opens well within
@@ -120,7 +126,7 @@ int main() {
   app.tick();
   fprintf(stdout, "\nPHASE2\n");
 
-  // ---- step to lvLo: adapt, clear, quiet steps match NOTHING -----------
+  // ---- step to lvLo: matches NOTHING, alarm never clears ---------------
   for (int f = 0; f < 4; ++f) sensor.base[f] = lvLo[f];
   runFeeds(app, sensor, 9000);
   Serial.feed("m\n");

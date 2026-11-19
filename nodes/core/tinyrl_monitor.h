@@ -71,7 +71,7 @@ public:
   void onWorldChange();        // regime changed (label event): drop traces
   void onFeedbackNormal();     // false alarm -> desensitise (raise theta)
   void onFeedbackFault();      // confirmed  -> sharpen (lower theta)
-  void attachLibrary(const ConditionLibrary* lib);  // optional observer
+  void attachLibrary(ConditionLibrary* lib);        // observer (reads +
 
   // state queries
   bool     learning()   const { return learning_; }
@@ -135,7 +135,9 @@ private:
   // optional library observer (B-rule, 2026-11-14): features matching a
   // NORMAL-kind centroid are a known situation, not an unknown one - they
   // count as quiet regardless of surprise score. Theta stays untouched.
-  const ConditionLibrary* lib_ = nullptr;
+  // 2026-11-19: non-const - the monitor also feeds each condition's own
+  // score band (per-condition calibration, condition_library.h).
+  ConditionLibrary* lib_ = nullptr;
 
   // score pipeline + phase machine
   float    score_ = 0, last_surprise_ = 1.0f;
@@ -145,11 +147,13 @@ private:
   bool     learning_ = false, theta_ready_ = false, alarmed_ = false;
   float    last_raw_[cfg::MAX_FEATURES];
 
-  // settle gate state (volatile by design: recomputed live, ~20 s warmup
+  // settle gate state (volatile by design: recomputed live, ~warmup
   // after boot/resume, once)
-  float    mot_fast_ = 0, mot_slow_ = 0;      // motion EMAs
-  int      calm_ = 0;                         // consecutive calm steps
+  float    mot_fast_[cfg::MAX_FEATURES];      // per-feature change-rate EMA
+  float    mot_slow_[cfg::MAX_FEATURES];      // per-feature noise-floor EMA
+  int      calm_ = 0;                         // consecutive all-feature calm steps
   bool     settled_ = true, has_prev_rel_ = false;
+  bool     quiet_latch_ = false;              // B-rule schmitt state (step())
   bool     prev_settled_ = true;              // rising edge = regime entry
   float    prev_rel_[cfg::MAX_FEATURES];      // last condition-space position
   float    sr_base_ = 1.0f;                   // slow surprise baseline (novelty ref)

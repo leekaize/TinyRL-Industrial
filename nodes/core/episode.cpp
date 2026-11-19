@@ -101,7 +101,14 @@ void EpisodeManager::close(const char* how, const FeatureSpace& fs, uint32_t now
   char sum[192];
   summary(sum, sizeof(sum), now);
 
-  if (strcmp(how, "cleared") == 0 && strcmp(cond_, "unknown") != 0 && lib_)
+  // Silent centroid refinement on a quiet clear (EMA 0.9/0.1), NORMAL-kind
+  // episodes only (bench finding 2026-11-19): a fault episode's mean folds
+  // in the recovery tail that precedes the clear, dragging the fault
+  // centroid toward the recovered state - the blob that let one learned
+  // fault swallow neighbouring states. Fault centroids come from explicit
+  // labels; normals may drift-track.
+  if (strcmp(how, "cleared") == 0 && strcmp(cond_, "unknown") != 0 &&
+      kind_ == COND_NORMAL && lib_)
     lib_->refine(cond_, mean, fs);              // EMA centroid refinement
 
   if (fn_) fn_("close", strcmp(how, "cleared") == 0 ? "alarm" : "info",

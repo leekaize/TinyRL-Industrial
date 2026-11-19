@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SERVER = ROOT / "tests" / "bench" / "bench_server.py"
 
 NORMALS = {"op_stopped", "speed_1", "speed_2"}
-MIN_BATCH_N = 25      # label only after the batch accumulated settled data
+MIN_BATCH_N = 15      # = cfg::ASK_MIN_BATCH: label as soon as the ask matures
 SLUG = {"op_speed_1": "speed_1", "op_speed_2": "speed_2",
         "op_stopped": "op_stopped",
         "imbalance": None, "phase_loss": None}
@@ -104,6 +104,14 @@ def max_step(st) -> int:
     return max((n["step"] for n in st["nodes"]), default=0)
 
 
+def maturing(st) -> bool:
+    """Any node still accumulating a batch (condition 'unidentified'): the
+    ask has not surfaced yet, so a stage must NOT resolve while this is
+    true - an ask that lands after the stage moved on gets stale-discarded
+    by the oracle and its condition is never named (bench 2026-11-19)."""
+    return any(n["cond"] == "unidentified" for n in st["nodes"])
+
+
 def flow(c, st) -> None:
     if not st["playing"] and not st["holding"] and not st["done"]:
         c.post("/control", {"cmd": "run", "seconds": 60})
@@ -161,10 +169,11 @@ def run_tour(c: Client, args):
         due = False
 
         # An ask can open on a state the tour does not name at THIS stage
-        # (e.g. the fault is installed while stopped: the vib node alarms on
-        # a stopped+imbalance state before START). A hold here would freeze
-        # sim time forever - machine stages have no oracle. Release it; the
-        # state is named at its own 'unknown' stage after START.
+        # (e.g. a setpoint change mid-stage). A hold here would freeze sim
+        # time forever - machine stages have no oracle. Release it; the
+        # state is named at its own 'unknown' stage. NOTE: since the
+        # 2026-11-19 generator change, faults installed while stopped
+        # measure exactly as stopped, so no ask can fire before START.
         if kind in ("cmd", "wait_mon", "machine") and st["ask"]:
             c.post("/control", {"cmd": "continue"})
 
@@ -187,7 +196,7 @@ def run_tour(c: Client, args):
         elif kind == "unknown":
             if mode == "two-way":
                 if not asked_seen:
-                    if st["ask"] or pendings(st):
+                    if st["ask"] or pendings(st) or maturing(st):
                         asked_seen = True
                     elif max_step(st) - stage_step >= 45:
                         asked_seen = True       # nothing asked: known
@@ -204,6 +213,7 @@ def run_tour(c: Client, args):
                             print(f"  [{stage}] labeled {sent} batch(es) "
                                   f"as {arg}")
                     due = not st["ask"] and pendings(st) == 0 \
+                        and not maturing(st) \
                         and max_step(st) - stage_step >= 12
             else:
                 due = max_step(st) - stage_step >= DWELL
@@ -224,8 +234,12 @@ def run_tour(c: Client, args):
                         print(f"  [{stage}] mapped {n_sent} batch(es) onto "
                               f"{arg} (desensitise)")
                 conds = [st["nodes"][i]["cond"] for i in node_type]
-                due = bool(conds) and all(cc == arg for cc in conds) \
-                    and not st["ask"]
+                # owner rule (2026-11-19): ANY node naming the state is
+                # recognition - fleet faults are owned by one modality (the
+                # vfd physically cannot see imbalance: i +0.05, tq +1.2 are
+                # inside its own noise), so requiring ALL nodes pinned
+                # stages on states half the rig is blind to
+                due = arg in conds and not st["ask"] and not maturing(st)
             else:
                 due = max_step(st) - stage_step >= DWELL
             if due:

@@ -58,5 +58,5 @@ Limitations: proposals only, no deployed algorithm; evidence is cloud telemetry,
 
 - [ ] Is our host-test/bench strictly streaming evaluation (no retrospective fit of normalizer or θ)? Audit before the RQ2/RQ3 baselines.
 - [ ] His λ_fp/λ_fn cost asymmetry: is +10%/−5% governance justified or arbitrary? Ablate.
-- [ ] Would per-condition μ/σ (conditional scoring) cut false alarms vs the global θ = μ + 4σ? Candidate synthetic-bench experiment.
+- [ ] Would per-condition μ/σ (conditional scoring) cut false alarms vs the global θ = μ + 4σ? Answered 2026-11-19 (see RESEARCH.md RQ3): the score at a state is not stationary across training eras, so score-band alarms were rejected; the sound parts shipped as the converged-state LR floor + per-condition diagnostics, and alarm duty is positional. Formalized as an RQ3 remaining-work item.
 - [ ] Does the schema need anything beyond `node_info` for cohort grouping, or is it purely agent-side? (RQ3)

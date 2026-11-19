@@ -96,12 +96,15 @@ the next build. Each node keeps its own `/model.bin`, `/net.bin`,
 ## MQTT contract (schema uns-v1.1)
 
 - `…/State/condition` (retained, on change): `state` idle|learn|ok|alarm,
-  `condition_id` idle|learning|normal|<label>|**unknown**, `confidence`.
+  `condition_id` idle|learning|normal|unidentified|**unknown**|<label>,
+  `confidence`. An alarmed state that matches no known condition first
+  shows `unidentified` (batch maturing) and becomes `unknown` - the ask -
+  only once the episode holds >= 15 settled samples (`cfg::ASK_MIN_BATCH`).
 - `…/State/event` (per transition): open/close/label + `summary` +
   `meas:{feature:value,...}`. An `open` with `condition_id:"unknown"` is
-  the node's implicit ASK - the settled state is also stored as a pending
-  batch (id `P0001...`, survives reboots, console `p` lists them). Answer
-  on `Action/feedback`:
+  the node's implicit ASK - the settled batch (>= 15 samples) is also
+  stored as pending (id `P0001...`, survives reboots, console `p` lists
+  them). Answer on `Action/feedback`:
   - `{"action":"label","label":"belt_slip","by":"agent-01","batch":"P0001"}`
     (label the STORED batch; late labels work, the episode relabels too).
     Omit `batch` to label the live episode directly.
@@ -124,13 +127,17 @@ boot → restore `model.bin` + `net.bin` + `conditions.jsonl` + `pending.jsonl`
 ~30 s CAL (ranges; baseline auto-registers as `op_stopped`) →
 ~30 s theta fit (network trains on the stream the whole time) →
 monitoring: the settle gate holds decisions off during transitions
-(no train / alarm / ask mid-motion); on a settled state an alarm opens an
-episode ⇒ known ⇒ labelled at once, unknown ⇒ the batch is stored (`p`)
-and the node asks ⇒ label or discard by id (late labels fine) ⇒ recognised
-on-device forever (the net trains on every settled step of LABELED
-conditions; unknown regimes never train, so a novel condition keeps
-alarming until named). Reboot mid-learning: CAL restarts automatically
-(improvement over MVP's "press 's' again").
+(no train / alarm / ask mid-motion; settled = every feature's motion
+plateaued onto its own noise floor for 8 consecutive steps); on a settled
+state an alarm opens an episode ⇒ known ⇒ labelled at once, unknown ⇒ the
+episode publishes `unidentified` and accumulates settled samples; at 15
+it stores the batch (`p`), publishes `unknown` and asks ⇒ label or
+discard by id (late labels fine) ⇒ recognised on-device forever (the net
+trains on every settled step of LABELED conditions; unknown regimes never
+train, so a novel condition keeps alarming until named). A maturing
+unknown that resolves into a known condition re-identifies and never
+asks. Reboot mid-learning: CAL restarts automatically (improvement over
+MVP's "press 's' again").
 
 ## Build & verify
 

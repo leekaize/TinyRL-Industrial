@@ -96,13 +96,38 @@ machine learning; LLM agents; Industry 5.0.
 > How does accuracy improve as more self-contained devices are added and
 > communicate with each other?
 
-**Current answer (N=1):** detection +4 steps after anomaly onset on the bench stream, zero false alarms on 200 quiet steps; z-baseline logged per run - the head-to-head "does learned prediction beat classical statistics?"
+**Current answer (N=1):** detection 14 steps after anomaly onset on the bench stream (8-step settle dwell + 5-step alarm credit + score rise), zero false alarms on 200 quiet steps; z-baseline logged per run - the head-to-head "does learned prediction beat classical statistics?"
 
 **Evidence:** `tests/host/` (short-stream simulation + full link check); per-run z-baseline logs
 
+#### Metric set (formalized 2026-11-19)
+
+> Why not accuracy/F1: accuracy is a function of theta, and theta is our
+> deployed operating point. Sweeping theta over a recorded series needs
+> full-series ground truth - exactly the batch-benchmark practice Mueller
+> rejects (literature/mueller-2025-ts-ad-industry.md §3: "benchmark
+> thresholds are computed from the full series plus ground truth, which is
+> unusable when streaming"). Every metric below is evaluated at the
+> on-device theta, streaming: each step scored with data < t only.
+> "Better" = detection latency or ask count improves while false alarms
+> stay flat - his separate λ_fp / λ_fn costs, not a blended score.
+
+| Metric | Definition | Why this one |
+|---|---|---|
+| False alarms | alarm spans opening while machine truth is not a fault AND the node asserted a named condition (it alarmed a state it claims to know) | the FP cost of his §4 bandit formulation; the operator-trust budget every improvement must leave untouched |
+| Detection latency | fault-mark step → the owning node shows the fault (fresh alarm edge or its condition column naming it); already named at inject = 0 | his Tenet 1: deployments exist to react NOW; latency is the alerting value |
+| Asks opened / redundant | alarm opens with condition `unknown` (the ask); an ask for a state the node had already named counts separately as redundant | Settles ch. 2 (accuracy per label) + GLAD (anomalies discovered vs labeled queries): the label economy of the one-sided loop |
+| Ask maturity | every stored ask batch holds >= ASK_MIN_BATCH (15) settled samples | a label is built from the stored batch; asking earlier stores transition noise (2026-11-19) |
+| Vocabulary growth | named conditions per node at run end | the semantic loop's payoff: recognition without re-asking |
+
+Implementation: `tests/bench/tools/summarize_run.py` (per-run block +
+cross-run contrast); the CI shadow of the tour is
+`tests/host/tour_test.cpp` (stage 5, asserts A1-A5: ask maturity,
+owner-only asks, 100% owner detection, re-tour zero asks, vocabulary).
+
 **Remaining work:**
 
-- [ ] Formalize metrics: detection latency, false-alarm rate, per-condition accuracy
+- [x] Formalize metrics: detection latency, false-alarm rate, per-condition accuracy - replaced by the metric set above (accuracy was threshold-dependent; per-condition recognition is carried by the vocabulary metric)
 - [ ] N-node runs (N = 1, 2, …) with shared condition libraries. 2-node
       interactive bench runs the mechanism: one label names every node of
       the machine with an open ask (same-timeframe event), each node's
@@ -111,9 +136,40 @@ machine learning; LLM agents; Industry 5.0.
 - [ ] Episode-mean classification dilutes fault signatures with the recovery
       tail: a heavy fault on top of a learned operating point matched that
       operating point's centroid (bench 2026-11-13). Consider peak-based or
-      windowed episode fingerprints
+      windowed episode fingerprints. Partial repair 2026-11-19: fault-kind
+      episodes no longer refine their centroid on close (the recovery tail
+      was folding into fault centroids; normals still drift-track)
 - [ ] Plot accuracy/latency vs N; marginal gain per added device
 - [ ] Compare vs single-node to isolate the communication benefit
+- [ ] WEB BENCH, OPEN (user report 2026-11-19, next session): stopped
+      states with a fault installed still do not read identical to pure
+      stopped on the web page. The generator + truth are fixed (overlays
+      gated on running; stopped = op_stopped), so check, in order: (a) the
+      bench binary was REBUILT - app.py's build() now lists
+      machine_model.hpp explicitly because header-only edits previously
+      left the binary stale; (b) dump /state feat rows for the same step
+      across stopped overlays and diff; (c) if measurements match, the
+      leftover is display-level: the node card shows `machine:` from the
+      marks and the ask panel pre-fills the compound slug even at stopped
+      (app.js truthSlug).
+- [x] Per-condition score calibration (2026-11-19): implemented as (a) a
+      converged-state LR floor - entries into a state whose surprise sits
+      inside its own learned band refine at the floor rate only, removing
+      the compounding interference behind the bench "back and forth"
+      degradation (CI form: tour_test churn, 20 cycles, zero alarms/asks);
+      (b) per-condition bands exposed in the library dump + bench plots as
+      diagnostics. The score-band AS_ALARM_THRESHOLD variant was built and
+      rejected the same day: a state's score is not stationary across
+      training eras (stopped: 1.2 -> ~6 after the speed states trained),
+      so a gated band freezes and false-alarms forever, and an ungated one
+      absorbs real anomalies. DECISION (2026-11-19): positionality is the
+      permanent primary channel - ALARM means "I don't know this state";
+      the one-step score is the gate for unknown states and the plasticity
+      diagnostic. Remaining open: none on this item.
+- [ ] Confidence semantics: `confidence()` is now positional for matched
+      states (1 at the centroid, 0 at the radius edge); the score margin
+      only applies to unmatched states. Ablate against the operator's
+      trust calibration on the bench (low priority, paper-only)
 
 ## Design decisions & rationale
 
@@ -122,6 +178,13 @@ machine learning; LLM agents; Industry 5.0.
 
 | Decision | Rationale | Alternatives rejected |
 |----------|-----------|----------------------|
+| Settle gate v2: per-feature fast/slow motion EMAs, slow EMA floored at 2 CAL units, all-feature veto + 8-step dwell (2026-11-19) | the scalar gate let one noise-dominated feature flap the whole vector (vib fmax/bands), and a noise lull inside a transition read as stabilized; the floor is the per-step-difference noise bound (difference of two noisy rel positions ~ 2 units) | quorum calm (a single-feature fault onset must still unsettle), fixed seconds (not self-calibrating) |
+| Asks mature at ASK_MIN_BATCH = 15 settled samples; `unidentified` before `unknown` (2026-11-19) | a label is built from the stored batch - asking at episode-open (n=1) stored mostly transition noise and burned the operator's attention; maturing states keep re-identifying, so states that resolve into known conditions never ask | immediate asks (bench 2026-11-19: 1-sample batches), labeling live episodes only |
+| Quiet is POSITIONAL, over ANY known condition (Schmitt latch: in at QUIET_Q, out at MATCH_Q; 2026-11-19, widened same day) | a named condition recurring is not news - normal OR fault; the condition name surfaces while quiet and that is the evidence. Score-gated quiet broke twice: re-testing the tight radius every step flickered (pre-latch), and a known state's score is not stationary across training eras (stopped score rose 1.2 -> ~6 after the speed states were learned) | score-band alarm thresholds on matched states (tried 2026-11-19, rejected with the tour-test failure: the outlier gate froze the band at the commissioning level and the first post-training visit alarmed forever); fault-kind never quiet (made every recognized fault re-alarm per visit - the operator-facing noise of the 2026-11-19 bench report) |
+| Per-condition score bands: used for the converged-state LR floor + diagnostics, NOT for alarms (2026-11-19) | the band (mu + k sigma of the surprise observed on a condition's settled matched steps) is a sound "does the net still predict THIS state" signal, so converged entries refine at the floor rate - repeated full-rate entries were the compounding interference behind the bench's back-and-forth degradation; alarm duty stays positional | band-gated alarms (see row above); no LR floor (full-rate re-entries compounded the degradation) |
+| Centroid refinement on close: NORMAL-kind episodes only | a fault episode's mean folds in the recovery tail before the clear, dragging fault centroids toward the recovered state | refining all kinds (the blob that swallowed neighbouring states) |
+| Fault overlays measurable only while RUNNING (generator + truth); stopped = op_stopped whatever is installed (2026-11-19, user decision) | a stopped machine reads exactly like a stopped machine no matter what is installed: the old vdc -3 leak and vib stopped ×1.3/×1.5 made stopped+phase_loss a spurious state the nodes correctly refused to distinguish | reporting the overlay while stopped (made quiet stopped passes look like missed identifications) |
+| Metrics: no accuracy/F1; latency + false alarms + ask economy at deployed theta | accuracy is a function of theta; threshold sweeps need full-series ground truth (Mueller §3) - see RQ3 metric set | point-adjust F1, ROC/AUC over recorded runs |
 | ObGD, not MVP histograms | net learns joint one-step dynamics; overshooting bound keeps bursts sane | MVP histograms (README § Architecture cheat sheet) |
 | StreamingOptimizer replaces ObGD (ported 2026-11-03; v2 via `-DMONITOR_USE_OBGD`) | v3 App. A: per-coordinate displacement < α, no 1/d shrinkage as nets grow; host-test green at α=2e-3, β=0.99995, λ=0.8 | keep v2-era ObGD |
 | Layer-aware sparse init (global 95% budget + connectivity floor) | v3 App. C: uniform 90% zeroed ALL first-layer weights at fan-in 4 - node booted deaf; floor guarantees ≥1 nonzero input per unit | uniform 90% per-layer |

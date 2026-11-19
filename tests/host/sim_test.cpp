@@ -1,13 +1,16 @@
 // =====================================================================
-// sim_test.cpp -- host-side simulation of the TinyRL condition monitor.
+// sim_test.cpp -- stage 2 of the host suite: the MONITOR in isolation.
 // Compiles the REAL general-core modules against the REAL TinyRL headers
-// with Arduino stubs, then:
+// with Arduino stubs, then asserts the core lifecycle end to end:
 //   A) CAL -> theta fit on a synthetic fixed-load induction-motor stream
 //      (noise-stationary + slow thermal drift; see sample() rationale)
 //   B) 200 quiet steps  -> must NOT alarm
-//   C) persistence round-trip (model.bin + net.bin via RAM LittleFS)
-//   D) injected anomaly -> MUST alarm within 100 steps
+//   C) persistence round-trip (model.bin + net.bin via RAM LittleFS):
+//      restored node scores identically on the same stream
+//   D) injected anomaly -> MUST alarm (the detector's reason to exist)
 //   E) condition library label -> save -> load -> match
+//   F) plasticity counters + optional long run (Dohare 2024, RQ2)
+//   G) per-step compute timing (host proxy for the MCU budget)
 // =====================================================================
 #include <cassert>
 #include <chrono>
@@ -119,6 +122,10 @@ int main() {
   TinyRLConditionMonitor::StepOut out2;
   for (int k = 0; k < 70; ++k, ++t) {
     sample(x, t, false);
+    record(x);
+    if (trace)
+      printf("TRACE step=%ld tag=quiet score=%.4f theta=%.4f\n",
+             (long)mon.steps(), mon.score(), mon.theta());
     mon.step(x, out2);
     mon2.step(x, out2);
   }
@@ -140,7 +147,7 @@ int main() {
     if (out.alarm_open) { alarm_at = k; memcpy(x_anom, x, sizeof(x)); break; }
   }
   assert(mon.alarmed() && alarm_at >= 0);
-  printf("C: ALARM opened after %d anomaly steps, score=%.3f theta=%.3f\n",
+  printf("D: ALARM opened after %d anomaly steps, score=%.3f theta=%.3f\n",
          alarm_at, mon.score(), mon.theta());
   plast::audit(mon, zr, rawWin, 4, t);
 
@@ -260,6 +267,6 @@ int main() {
            total / N, worst, N);
   }
 
-  printf("\nALL HOST TESTS PASSED\n");
+  printf("\nSIMCHECK OK: cal/fit/quiet/persist/alarm/label/timing asserted\n");
   return 0;
 }

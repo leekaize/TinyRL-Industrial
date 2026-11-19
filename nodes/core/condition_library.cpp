@@ -31,16 +31,23 @@ int ConditionLibrary::match(const float* raw, const FeatureSpace& fs,
   // carries none. The old mean-distance over 0..1 let one discriminative
   // feature be outvoted by the flat ones (bench finding, 2026-11-14);
   // CAL-only units made the radii themselves wrong (2026-11-15).
+  // 2026-11-19: among qualifying conditions the NEAREST wins (smallest
+  // worst-feature normalized distance) - first-inside made the winner
+  // depend on label order once radii overlapped.
+  int   best = -1;
+  float best_d = 0;
   for (int i = 0; i < n_; ++i) {
-    bool ok = true;
+    float worst = 0;
+    bool  ok = true;
     for (int f = 0; f < nf_; ++f) {
       float unit = lib_[i].u[f] > 0 ? lib_[i].u[f] : fs.unit(f);
-      float d = fabsf(fs.rel(f, raw[f]) - lib_[i].c[f]);
-      if (d > q * unit) { ok = false; break; }
+      float d = fabsf(fs.rel(f, raw[f]) - lib_[i].c[f]) / unit;
+      if (d > q) { ok = false; break; }
+      if (d > worst) worst = d;
     }
-    if (ok) return i;   // first condition fully inside the radius
+    if (ok && (best < 0 || worst < best_d)) { best = i; best_d = worst; }
   }
-  return -1;
+  return best;
 }
 
 int ConditionLibrary::label(const char* slug, const float* mean_rel,
@@ -91,12 +98,62 @@ void ConditionLibrary::refine(const char* id, const float* mean_raw,
   c.last_seen = millis();
 }
 
+void ConditionLibrary::observeScore(int idx, float score) {
+  if (idx < 0 || idx >= n_) return;
+  Condition& c = lib_[idx];
+  if (c.s_n >= cfg::PERCOND_MIN_N) {
+    float sd = sqrtf(c.s_m2 / (float)c.s_n);
+    if (score > c.s_mu + 3.0f * sd)
+      return;                       // anomaly: never widens its own band
+  }
+  c.s_n++;
+  float d = score - c.s_mu;
+  c.s_mu += d / (float)c.s_n;
+  c.s_m2 += d * (score - c.s_mu);
+}
+
+float ConditionLibrary::scoreTheta(int idx, float fallback) const {
+  if (idx < 0 || idx >= n_) return fallback;
+  const Condition& c = lib_[idx];
+  if (c.s_n < cfg::PERCOND_MIN_N) return fallback;
+  return c.s_mu + cfg::PERCOND_KSIG * sqrtf(c.s_m2 / (float)c.s_n);
+}
+
+bool ConditionLibrary::converged(int idx, float score) const {
+  if (idx < 0 || idx >= n_) return false;
+  const Condition& c = lib_[idx];
+  if (c.s_n < cfg::PERCOND_MIN_N) return false;
+  return score <= c.s_mu + 2.0f * sqrtf(c.s_m2 / (float)c.s_n);
+}
+
+float ConditionLibrary::matchDist(const float* raw, const FeatureSpace& fs,
+                                  float q, int* idx) const {
+  int   best = -1;
+  float best_d = 1e9f;
+  for (int i = 0; i < n_; ++i) {
+    float worst = 0;
+    bool  ok = true;
+    for (int f = 0; f < nf_; ++f) {
+      float unit = lib_[i].u[f] > 0 ? lib_[i].u[f] : fs.unit(f);
+      float d = fabsf(fs.rel(f, raw[f]) - lib_[i].c[f]) / unit;
+      if (d > q) { ok = false; break; }
+      if (d > worst) worst = d;
+    }
+    if (ok && worst < best_d) { best = i; best_d = worst; }
+  }
+  if (idx) *idx = best;
+  return best >= 0 ? best_d : -1.0f;
+}
+
 void ConditionLibrary::list() const {
   Serial.printf("[LIB] %d known condition(s):\n", n_);
   for (int i = 0; i < n_; ++i) {
     const Condition& c = lib_[i];
-    Serial.printf("  %-16s n=%-4lu src=%-8s centroid=[", c.id,
-                  (unsigned long)c.count, c.source);
+    Serial.printf("  %-16s n=%-4lu src=%-8s kind=%-6s theta=%.2f s_n=%lu"
+                  " centroid=[", c.id,
+                  (unsigned long)c.count, c.source,
+                  c.kind == COND_NORMAL ? "normal" : "fault",
+                  scoreTheta(i, 0.0f), (unsigned long)c.s_n);
     for (int f = 0; f < nf_; ++f)
       Serial.printf("%s%.2f", f ? " " : "", c.c[f]);
     Serial.printf("] units=[");
@@ -118,10 +175,11 @@ bool ConditionLibrary::save(const char* path) const {
     for (int k = 0; k < nf_; ++k)
       f.printf("%s%.4f", k ? "," : "", c.u[k]);
     f.printf("],\"count\":%lu,\"first\":%lu,\"last\":%lu,\"src\":\"%s\","
-             "\"kind\":\"%s\"}\n",
+             "\"kind\":\"%s\",\"smu\":%.4f,\"sm2\":%.4f,\"sn\":%lu}\n",
              (unsigned long)c.count, (unsigned long)c.first_seen,
              (unsigned long)c.last_seen, c.source,
-             c.kind == COND_NORMAL ? "normal" : "fault");
+             c.kind == COND_NORMAL ? "normal" : "fault",
+             c.s_mu, c.s_m2, (unsigned long)c.s_n);
   }
   f.close();
   return true;
@@ -166,6 +224,11 @@ bool ConditionLibrary::load(const char* path) {
     c.count      = (uint32_t)jsonNum(line.c_str(), "count", 0);
     c.first_seen = (uint32_t)jsonNum(line.c_str(), "first", 0);
     c.last_seen  = (uint32_t)jsonNum(line.c_str(), "last", 0);
+    // per-condition score band (2026-11-19): optional keys - old files
+    // load with s_n = 0 and fall back to the global theta until re-learned
+    c.s_mu       = jsonNum(line.c_str(), "smu", 0);
+    c.s_m2       = jsonNum(line.c_str(), "sm2", 0);
+    c.s_n        = (uint32_t)jsonNum(line.c_str(), "sn", 0);
     if (c.id[0]) n_++;
   }
   f.close();

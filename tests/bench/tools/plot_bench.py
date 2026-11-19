@@ -70,24 +70,35 @@ def fig_detection(rows, outdir):
     latency = alarm["step"] - onset if alarm else None
     theta = rows[0]["theta"]
 
-    fig, ax = plt.subplots(figsize=(8.2, 3.4), dpi=150)
+    # latency decomposition (node_config.h): the alarm credit runs only on
+    # settled steps, so the figure must show WHERE the 5 settled steps
+    # start after the 8-step settle dwell
+    settled_at = onset + 8   # SETTLE_CALM_N: worst case after a step change
+
+    fig, ax = plt.subplots(figsize=(8.2, 3.6), dpi=150)
     ax.axvspan(quiet[0]["step"], onset, color=GREEN, alpha=0.07, label="quiet")
     ax.axvspan(onset, anom[-1]["step"], color=RED, alpha=0.07, label="anomaly")
     ax.plot([r["step"] for r in quiet], [r["score"] for r in quiet], color=BLUE,
             label="score (EMA of surprise)")
     ax.plot([r["step"] for r in anom], [r["score"] for r in anom], color=BLUE)
-    ax.axhline(theta, color=RED, ls="--", lw=1.2, label="theta = mu + 4 sigma")
+    ax.axhline(theta, color=RED, ls="--", lw=1.2,
+               label="fit theta = mu + 4 sigma (gates unknown states)")
+    ax.axvline(onset, color=ORANGE, ls="-", lw=1.2, label="anomaly onset")
+    ax.axvline(settled_at, color=MUTED, ls=":", lw=1.1,
+               label="settled (8-step dwell)")
     if alarm:
         ax.axvline(alarm["step"], color=RED, ls=":", lw=1.4, label="alarm")
-        ax.annotate("alarm: +%d steps after onset" % latency,
+        ax.annotate("alarm: +%d steps after onset\n(8-step dwell + %d settled "
+                    "alarm-credit steps)" % (latency, latency - 8),
                     xy=(alarm["step"], alarm["score"]),
-                    xytext=(alarm["step"] - 85, alarm["score"] * 0.30),
+                    xytext=(alarm["step"] - 110, alarm["score"] * 0.30),
                     arrowprops=dict(arrowstyle="->", color=INK, lw=0.8),
                     fontsize=9, color=INK)
     ax.set_yscale("log")
     ax.set_xlabel("monitor step")
     ax.set_ylabel("score (z-space EMA)")
-    ax.set_title("One-step prediction detector: 200 quiet steps, then injected anomaly")
+    ax.set_title("One-step prediction detector: quiet, then injected anomaly "
+                 "(alarm = unknown state)")
     ax.grid(alpha=0.3)
     ax.legend(loc="lower right", fontsize=8)
     fig.tight_layout()
@@ -95,7 +106,7 @@ def fig_detection(rows, outdir):
     plt.close(fig)
 
 
-def fig_plasticity(pts, regimes, outdir):
+def fig_plasticity(pts, regimes, outdir, input_dim=4):
     if not pts:
         print("plasticity figure skipped: bench log has no [PLAST] rows")
         return
@@ -103,16 +114,22 @@ def fig_plasticity(pts, regimes, outdir):
     panels = [
         ("dead-unit fraction",
          [("hidden layer 1", [p["dead1"] for p in pts], BLUE),
-          ("hidden layer 2", [p["dead2"] for p in pts], ORANGE)], None),
+          ("hidden layer 2", [p["dead2"] for p in pts], ORANGE)],
+         [(0.0, "healthy: 0"), (0.25, "Dohare's failure ceiling ~0.25")]),
         ("mean |w|",
-         [("mean |w|", [p["maw"] for p in pts], BLUE)], None),
+         [("mean |w|", [p["maw"] for p in pts], BLUE)], []),
         ("effective rank",
-         [("effective rank", [p["eff"] for p in pts], BLUE)], None),
+         [("effective rank", [p["eff"] for p in pts], BLUE)],
+         [(float(input_dim), "input dimension (%d)" % input_dim)]),
     ]
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(8.2, 6.8), dpi=150)
-    for ax, (ylabel, lines, _) in zip(axes, panels):
+    for ax, (ylabel, lines, guides) in zip(axes, panels):
         for label, ys, color in lines:
             ax.plot(steps, ys, color=color, label=label)
+        for yv, glabel in guides:
+            ax.axhline(yv, color=RED, ls=":", lw=1.0)
+            ax.annotate(glabel, xy=(0.995, yv), xycoords=("axes fraction",
+                        "data"), fontsize=7, color=RED, ha="right", va="bottom")
         for s in regimes:
             ax.axvline(s, color=MUTED, ls="--", lw=0.8)
         ax.set_ylabel(ylabel)
@@ -120,12 +137,16 @@ def fig_plasticity(pts, regimes, outdir):
         ax.legend(fontsize=8, loc="upper left")
     axes[0].set_ylim(0, max(0.02, max(max(ys) for _, ys, _ in panels[0][1]) * 1.2))
     axes[0].set_title("Plasticity audit: 1,348-param Stream-TD net, regime shifts "
-                      "marked (Dohare 2024 correlates)", fontsize=11)
+                      "dashed (Dohare 2024 correlates)", fontsize=11)
+    if regimes:
+        axes[0].annotate("dashed grey = regime shifts", xy=(0.02, 0.02),
+                         xycoords="axes fraction", fontsize=7, color=MUTED)
     first, last = pts[0], pts[-1]
     axes[1].annotate("mean |w| %.4f -> %.4f (+%.0f%%)" % (
         first["maw"], last["maw"], 100 * (last["maw"] / first["maw"] - 1)),
         xy=(0.30, 0.82), xycoords="axes fraction", fontsize=9)
-    axes[2].annotate("effective rank %.2f -> %.2f" % (first["eff"], last["eff"]),
+    axes[2].annotate("effective rank %.2f -> %.2f (healthy: tracks the "
+                     "input dim)" % (first["eff"], last["eff"]),
                      xy=(0.30, 0.82), xycoords="axes fraction", fontsize=9)
     axes[2].set_xlabel("monitor step")
     fig.tight_layout()
@@ -149,7 +170,7 @@ def main(argv):
         print("trace log not found: %s" % trace_log)
     if bench_log.exists():
         plast, regimes = parse_bench(bench_log)
-        fig_plasticity(plast, regimes, outdir)
+        fig_plasticity(plast, regimes, outdir, input_dim=4)
         if plast:
             first, last = plast[0], plast[-1]
             print("mean |w| %.4f -> %.4f | effective rank %.2f -> %.2f | "

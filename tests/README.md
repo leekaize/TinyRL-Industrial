@@ -6,7 +6,7 @@ the multi-node scenarios, and an MCU footprint check with the real
 toolchain. Run from the repo root:
 
 ```bash
-bash tests/run_tests.sh      # 4-stage host suite (fast, assert-based)
+bash tests/run_tests.sh      # 5-stage host suite (fast, assert-based)
 bash tests/run_mcu.sh        # PlatformIO build: flash/RAM per node vs budget
 ```
 
@@ -14,13 +14,15 @@ bash tests/run_mcu.sh        # PlatformIO build: flash/RAM per node vs budget
 
 ```text
 tests/
-├── run_tests.sh              the 4-stage host suite (assert-based, CI-able)
+├── run_tests.sh              the 5-stage host suite (assert-based, CI-able)
 ├── run_mcu.sh                real-toolchain build: flash/RAM vs budget
 ├── stub_esp32/               Arduino/WiFi/PubSubClient/LittleFS stubs
 ├── host/                     C++ sources
 │   ├── sim_test.cpp          stage 2: cal/fit/quiet/alarm/persist/library + per-step timing
 │   ├── console_test.cpp      stage 3: the real node boots on stubs, console driven
 │   ├── tripwire_test.cpp     stage 4: quiet-unmatched tripwire semantics
+│   ├── tour_test.cpp         stage 5: the seven-condition tour, ask/settle discipline
+│   ├── machine_model.hpp     the simulated motor + both sensor models (shared)
 │   ├── bench_host.cpp        multi-node host run the web bench drives
 │   └── plasticity.hpp        Dohare-2024 counters (dead units, mean |w|, eff rank)
 └── bench/                    the interactive web bench
@@ -42,29 +44,32 @@ tests/
 ## What a green run looks like (annotated, real output)
 
 ```text
-== 1/4 syntax check: all 14 TUs ==
+== 1/5 compile check: all 14 TUs vs the real TinyRL headers ==
    clean
-== 2/4 simulation: cal/fit/quiet/alarm/persist/library ==
+== 2/5 monitor sim: commission -> quiet -> persist -> alarm -> label ==
 [PLAST] step=339      dead=0.00/0.00 mean|w|=0.0111 eff_rank=4.54 (win=256)
 G: per-step compute (host proxy): avg 8 us, max 636 us over 2000 steps (MCU budget: 1 s/step at 1 Hz)
-ALL HOST TESTS PASSED
-== 3/4 full-node link + boot + console ==
+SIMCHECK OK: cal/fit/quiet/persist/alarm/label/timing asserted
+== 3/5 whole-node boot: link, restore, every console path ==
 === LINK + SETUP/LOOP + CONSOLE OK ===
-== 4/4 quiet-unmatched tripwire (real SensorNodeApp, fake sensor) ==
+== 4/5 tripwire: labeled regime adapts+clears, unknown stays alarmed ==
 TRIPCHECK OK: labeled regime trains+clears, unknown regime alarms and stays alarmed until named
-=== HOST-TEST GREEN: 4/4 stages passed ===
+== 5/5 two-node tour: asks mature, owner-only detection, churn stays quiet ==
+TOURCHECK OK: asks mature at 15+, owner-only asks, re-tour zero asks, full vocabulary
+=== HOST-TEST GREEN: 5/5 stages passed ===
 ```
 
 | Line | Meaning |
 |---|---|
-| `1/4 clean` | all 14 translation units compile against the real TinyRL headers with Arduino stubs |
-| `2/4 ... PASSED` | 30-step CAL, 30-step theta fit, 200 quiet steps with no false alarm, save/reload round-trip, injected anomaly that alarms, condition-library label/match. Assert-based |
+| `1/5 clean` | all 14 translation units compile against the real TinyRL headers with Arduino stubs |
+| `2/5 ... SIMCHECK OK` | 30-step CAL, 30-step theta fit, 200 quiet steps with no false alarm, save/reload round-trip, injected anomaly that alarms, condition-library label/match. Assert-based |
 | `G: per-step compute` | host proxy for the MCU budget: the whole per-second workload (forward + bounded update + score EMA + gates) timed on x86. Catches order-of-magnitude regressions; the 1 Hz budget is 1 s/step |
-| `3/4 LINK ... OK` | the real node boots on the stubs and every console path (s, m, l, p, f, reset) executes |
-| `4/4 TRIPCHECK OK` | the 2026-11-15 training policy holds: a LABELED regime trains + clears, an unknown regime alarms and stays alarmed until named |
+| `3/5 LINK ... OK` | the real node boots on the stubs and every console path (s, m, l, p, f, reset) executes |
+| `4/5 TRIPCHECK OK` | the 2026-11-15 training policy holds: a LABELED regime trains + clears, an unknown regime alarms and stays alarmed until named |
+| `5/5 TOURCHECK OK` | the ask/settle discipline holds on the real tour: asks mature at >= 15 settled samples, only owner modalities ask, 20 churn cycles with zero alarms and zero asks, full vocabulary |
 | `HOST-TEST GREEN` | the single greppable verdict line |
 
-## Current performance (validated 2026-11-15/16, synthetic bench)
+## Current performance (validated 2026-11-19, synthetic bench)
 
 Headline contrast, two-way vs node-only baseline
 (`bash tests/bench/scenarios/paper_tour.py` in both modes, then
@@ -72,19 +77,20 @@ Headline contrast, two-way vs node-only baseline
 
 | metric | two-way | node-only |
 |---|---|---|
-| upstream asks (semantic calls) | 10 | 0 (asks stay on the node) |
-| labels consumed | 11 | 0 |
-| false alarms (per node) | g100=2-3, vib=2-3 | g100=2, vib=3-4 |
-| fault identification (owner) | 4/5 hits, latency 0-10 steps | 4/5 hits, latency 0-11 steps |
+| upstream asks (semantic calls) | 9 (redundant 0, every batch = 15 settled samples) | 0 (asks stay on the node) |
+| labels consumed | 9 | 0 |
+| false alarms (alarmed a named state during non-fault truth) | g100=0, vib=0 | g100=0, vib=0 |
+| fault identification (owner) | 4/4 hits, latency 0-31 steps | 4/4 hits, latency 12-30 steps |
 | condition vocabulary (final) | g100=5, vib=6 | g100=1, vib=1 |
 
 Reading: detection is the SAME without the semantic loop - the payoff of
 two-way context is the vocabulary (every condition recognised on the
 re-tour with ZERO new asks) and the small, bounded number of upstream
-calls. The one owner miss is `speed_1_imbalance` on the drive side: the
-VFD registers shift 1.6-2.6% under imbalance, inside any honest radius -
-the vibration node owns that fault. That is the cross-modal result, not
-a defect.
+calls. The partner misses are cross-modal, not defects: the VFD registers
+shift 1.6-2.6% under imbalance, inside any honest radius - the vibration
+node owns that fault. Metrics are evaluated at the deployed theta,
+streaming (RESEARCH.md RQ3); accuracy/F1 are deliberately not reported
+(Mueller 2025: threshold sweeps need full-series ground truth).
 
 ## MCU footprint (run_mcu.sh, real ESP32-S3 toolchain)
 
@@ -107,10 +113,11 @@ a jump in these numbers is the first sign of an embedded-budget leak.
 
 | Stage | What it builds | What it proves | Typical failure caught |
 |---|---|---|---|
-| 1 syntax | every core TU, `-fsyntax-only` | headers and signatures line up | compile errors, first |
-| 2 simulation | monitor + library + episode + persistence + `sim_test.cpp` | learning, alarm, persistence round-trip, library match, per-step timing | learning or persistence regressions |
-| 3 link | the whole node incl. MQTT/console on stubs | boot, restore, console paths end to end | cross-module wiring regressions |
+| 1 compile | every core TU, `-fsyntax-only` | headers and signatures line up | compile errors, first |
+| 2 monitor sim | monitor + library + episode + persistence + `sim_test.cpp` | commissioning, quiet, persistence round-trip, alarm on anomaly, library match, per-step timing | learning or persistence regressions |
+| 3 whole-node boot | the whole node incl. MQTT/console on stubs | boot, restore, console paths end to end | cross-module wiring regressions |
 | 4 tripwire | the whole core + `tripwire_test.cpp` | training policy: labeled regime clears, unknown stays alarmed | counting the wrong steps |
+| 5 two-node tour | two whole nodes + `tour_test.cpp` on the shared machine model | ask maturity (15 settled samples), owner-only asks, churn stays quiet, full vocabulary | premature asks, gate regressions, churn degradation |
 
 ## Reading the plasticity log (`[PLAST]`, stage 2 and the long-run bench)
 
@@ -204,11 +211,15 @@ nodes.
 pass (regression test for the whole stack). `bench/scenarios/paper_tour.py
 --mode two-way|node-only` plays the 7-condition tour (commission stopped →
 speed_1 → speed_2 → faults installed while stopped, SPEED set before
-START → re-tour), labels every fresh batch from machine truth once it
-holds >= 25 settled samples, discards stale batches, exports the run and
-prints the summarizer block. `bench/scenarios/probe_pending.py` is a
-2-minute targeted probe of the pending-batch plumbing alone (store,
-accumulate, discard).
+START → re-tour; since 2026-11-19 a stopped machine measures exactly as
+pure stopped no matter what is installed, so fault periods begin at
+START), labels every fresh batch from machine truth once the
+node's ask matures at >= 15 settled samples (`MIN_BATCH_N` mirrors
+`cfg::ASK_MIN_BATCH`), waits out maturing (`unidentified`) states so no
+ask is orphaned, discards stale batches, exports the run and prints the
+summarizer block. `bench/scenarios/probe_pending.py` is a 2-minute
+targeted probe of the pending-batch plumbing alone (store, accumulate,
+discard).
 
 ### Runs → paper assets
 
@@ -265,10 +276,10 @@ TINYRL_LONGRUN=100000 /tmp/tinyrl_test_host > /tmp/bench.log
 python3 tests/bench/tools/plot_bench.py /tmp/trace.log /tmp/bench.log
 ```
 
-- `detection-trace.png`: score vs theta over the stage-2 simulation; the quiet
-  plateau stays below 0.7 theta, the anomaly lifts the score about two orders
-  of magnitude, and the alarm lands +4 steps after onset. This is the RQ3
-  detection-latency plot.
+- `detection-trace.png`: score vs fit-theta over the stage-2 simulation; the quiet
+  plateau stays below theta, the anomaly lifts the score, and the alarm lands
+  14 steps after onset (8-step settle dwell + 5-step alarm credit + the score
+  EMA crossing). This is the RQ3 detection-latency plot.
 - `plasticity-bench.png`: the three Dohare correlates across the 100k-step
   long run, regime shifts marked. Read it together with the `[PLAST]` table
   above: it is the same counters over time.

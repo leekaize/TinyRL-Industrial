@@ -57,6 +57,9 @@ public:
                         uint32_t* step) const;
   bool        libCentroid(int idx, float* out, CondKind* kind) const;
   float       libUnit(int idx, int f) const;   // condition's own match unit
+  float       libTheta(int idx) const;   // condition's own score threshold
+                                            // (per-condition band, 2026-11-19)
+  float       fsAnchor(int f) const;     // condition-space anchor (rel plots)
 
 private:
   void onEvent(const char* ev, const char* sev, const char* cid,
@@ -64,6 +67,8 @@ private:
   // settled identity check: has the state moved beyond the open
   // episode's stored batch spread on some feature?
   bool batchMoved(const float* raw) const;
+  // store the open episode's batch + publish the ask, once it matured
+  void askIfMature(uint32_t now);
   void publishCondition(bool retained);
   void saveAll();
 
@@ -79,6 +84,9 @@ private:
   bool     have_raw_ = false;
   bool     baseline_registered_ = false;   // CAL baseline -> 'op_stopped'
   int      ep_pend_ = -1;   // pending index of the OPEN episode's batch
+  bool     ep_ask_dismissed_ = false;  // operator discarded this episode's
+                                      // ask: do not re-ask the SAME
+                                      // occurrence, only the next one
   int      ident_drift_ = 0;  // consecutive settled steps the identity looked stale
   char     last_cond_key_[48];
   uint32_t last_model_save_ = 0;

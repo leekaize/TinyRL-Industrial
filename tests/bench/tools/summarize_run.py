@@ -1,27 +1,36 @@
 #!/usr/bin/env python3
 """Paper metrics from an exported web-bench run.
 
-    python3 tests/host-test/webbench/summarize_run.py runs/run-<ts>.jsonl
+    python3 tests/bench/tools/summarize_run.py runs/run-<ts>.jsonl
 
-Reads the export (meta, S rows, EV events, MARK machine truth) and prints
-a markdown metrics block per run, plus a per-fault CSV next to the run
-file (runs/run-<ts>-summary.csv).
+Metric set (RESEARCH.md RQ3, formalized 2026-11-19; rationale in
+literature/mueller-2025-ts-ad-industry.md, settles-2012 ch. 2,
+islam-2018-glad): evaluated at the DEPLOYED operating point - theta as fit
+on-node, every step scored with data < t only (streaming). Accuracy/F1 are
+deliberately NOT reported: they are functions of theta, and sweeping theta
+over a recorded series needs full-series ground truth, exactly the
+batch-benchmark practice Mueller rejects. "Better" = detection latency or
+ask count improves while false alarms stay flat.
 
-Metrics:
-- identification latency per fault: fault MARK step -> first NEW alarm
-  or local fault match (state transition into alarm/match) on a node
-  within the fault period. A state already active at inject time is a
-  run-on episode from an earlier fault, not an identification.
-  Reported for the fault's OWNING sensing node and the partner node separately: a fleet fault is owned
-  by one node type (imbalance -> vib_adxl, phase_loss -> vfd_g100);
-  a partner alarm in the same window is cross-modal support, its miss is expected.
-- false alarm: alarm span starting while machine truth is not a fault
-- asks opened: EV "open cond=unknown" count. In node-only mode these
-  never leave the node, so upstream asks = 0 there
-- labels: [FB] label events received
+- identification latency per fault PERIOD: fault mark -> the node SHOWS
+  the fault (a fresh alarm edge, or its condition column naming it).
+  Already named at inject = latency 0 (run-on knowledge of a repeated
+  fault is correct, not a miss). Owner and partner reported separately:
+  a fleet fault is owned by one node type (imbalance -> vib_adxl,
+  phase_loss -> vfd_g100); a partner hit is cross-modal support, its miss
+  is expected.
+- false alarm: alarm span opening while machine truth is not a fault and
+  the node asserted a NAMED condition - it alarmed a state it claims to
+  know. An alarm opening unknown/unidentified is an ASK, not a false
+  alarm; an ask for a state the node had already named is counted
+  separately as a redundant ask.
+- asks opened: EV "open cond=unknown" count + stored batch sizes (the ask
+  matures only at >= ASK_MIN_BATCH settled samples, 2026-11-19).
+- labels: [FB] label events received.
 
-Machine truth = MARK rows (step, machine name) written by the bench
-export. Fault names: imbalance / phase_loss.
+Machine truth = MARK rows (exact application step, machine name). Marks
+with the same name in a row are ONE period: a setpoint change inside a
+fault period is not a new injection.
 """
 import argparse
 import csv
@@ -30,21 +39,9 @@ from pathlib import Path
 
 FAULTS = ("imbalance", "phase_loss")
 OWNER = {"imbalance": "vib_adxl", "phase_loss": "vfd_g100"}
-
-
-def spans(rows, key, want):
-    out, start, prev = [], None, None
-    for r in rows:
-        cur = r[key] == want
-        if cur and start is None:
-            start = r["step"]
-        if not cur and start is not None:
-            out.append((start, prev))
-            start = None
-        prev = r["step"]
-    if start is not None:
-        out.append((start, prev))
-    return out
+NON_COND = ("", "idle", "learning", "normal", "unknown", "unidentified")
+TRUTH_SLUG = {"op_stopped": "op_stopped",
+              "op_speed_1": "speed_1", "op_speed_2": "speed_2"}
 
 
 def load(path):
@@ -63,9 +60,19 @@ def load(path):
     return meta, srows, events, sorted(marks)
 
 
-def truth_at(marks, step, default="op_stopped"):
-    name = default
+def merge_marks(marks):
+    """Consecutive same-name marks -> one period boundary list."""
+    out = []
     for s, n in marks:
+        if out and out[-1][1] == n:
+            continue
+        out.append((s, n))
+    return out
+
+
+def truth_at(periods, step, default="op_stopped"):
+    name = default
+    for s, n in periods:
         if s <= step:
             name = n
         else:
@@ -73,64 +80,122 @@ def truth_at(marks, step, default="op_stopped"):
     return name
 
 
-def identify(rows, fault, start, end):
-    """First alarm or fault-match state that STARTS in [start, end).
+def fault_periods(periods):
+    """[(start, end, name)] for every merged fault period."""
+    out = []
+    for i, (s, n) in enumerate(periods):
+        if n in FAULTS:
+            end = periods[i + 1][0] if i + 1 < len(periods) else 10 ** 9
+            out.append((s, end, n))
+    return out
 
-    A state already active when the fault is injected (run-on episode
-    from an earlier fault) is not an identification of this fault.
-    Fault conditions are compound slugs (speed_1_imbalance): a quiet
-    match names the fault too, so the suffix counts as identification.
-    """
-    prev = False
+
+def alarm_spans(rows):
+    spans, start, prev = [], None, False
     for r in rows:
-        cur = r["phase"] == "alarm" or r["cond"] == fault \
-            or r["cond"].endswith("_" + fault)
-        if cur and not prev and start <= r["step"] < end:
-            return r["step"]
+        cur = r["phase"] == "alarm"
+        if cur and not prev:
+            start = r["step"]
+        if not cur and prev:
+            spans.append((start, r["step"]))
         prev = cur
+    if prev and rows:
+        spans.append((start, rows[-1]["step"]))
+    return spans
+
+
+def cond_at(rows, step):
+    for r in rows:
+        if r["step"] == step:
+            return r["cond"]
+    return ""
+
+
+def vocab_of(rows):
+    """slug -> first step the node showed it as a named condition."""
+    v = {}
+    for r in rows:
+        if r["cond"] not in NON_COND:
+            v.setdefault(r["cond"], r["step"])
+    return v
+
+
+def identify(rows, fault, start, end):
+    """First step in [start, end) the node shows the fault: a FRESH alarm
+    edge (a run-on alarm from another state is not evidence) or its cond
+    naming the fault (compound slug suffix; persists while quiet - named
+    knowledge is exactly what the re-tour tests)."""
+    prev_alarm = False
+    for r in rows:
+        if r["step"] >= end:
+            break
+        named = r["cond"] == fault or r["cond"].endswith("_" + fault)
+        fresh_alarm = r["phase"] == "alarm" and not prev_alarm
+        if (fresh_alarm or named) and r["step"] >= start:
+            return r["step"]
+        prev_alarm = r["phase"] == "alarm"
     return None
 
 
 def summarize(path) -> tuple:
     """Returns (markdown_block, metrics_dict). The block is the per-run
-    report; the metrics dict feeds the cross-run contrast table
-    (compare()) - the two-way vs node-only headline for the paper."""
-    meta, srows, events, marks = load(path)
+    report; the metrics dict feeds the cross-run contrast table."""
+    meta, srows, events, raw_marks = load(path)
+    periods = merge_marks(raw_marks)
     types = meta.get("node_types") or []
     n_nodes = len(types) or 1
     types = types or ["node"] * n_nodes
     mode = meta.get("mode", "two-way")
+
     asks = sum(1 for _, t in events if "open cond=unknown" in t)
+    batch_ns = []
+    for _, t in events:
+        if "[PEND] batch" in t and "stored (" in t:
+            try:
+                batch_ns.append(int(t.split("stored (")[1].split(" ")[0]))
+            except (ValueError, IndexError):
+                pass
     upstream = 0 if mode == "node-only" else asks
     labels = sum(1 for _, t in events if "[FB]" in t and "'label'" in t)
 
-    fault_events = []
-    for idx, (s, n) in enumerate(marks):
-        if n in FAULTS:
-            end = marks[idx + 1][0] if idx + 1 < len(marks) else 10 ** 9
-            fault_events.append((s, end, n))
-
     rows_by_node = {i: [r for r in srows if r["node"] == i]
                     for i in range(n_nodes)}
-    alarms_by_node = {i: spans(rows_by_node[i], "phase", "alarm")
-                      for i in range(n_nodes)}
-    false_by_node = {}
-    for i in range(n_nodes):
-        false_by_node[i] = sum(1 for a, b in alarms_by_node[i]
-                               if truth_at(marks, a) not in FAULTS)
+    vocab = {i: vocab_of(rows_by_node[i]) for i in range(n_nodes)}
+    spans_by_node = {i: alarm_spans(rows_by_node[i]) for i in range(n_nodes)}
 
+    false_by_node, redundant_by_node = {}, {}
+    for i in range(n_nodes):
+        false_by_node[i] = 0
+        redundant_by_node[i] = 0
+        for a, _b in spans_by_node[i]:
+            truth = truth_at(periods, a)
+            if truth in FAULTS:
+                continue                      # detection, ident metric owns it
+            cond_open = cond_at(rows_by_node[i], a)
+            if cond_open in ("unknown", "unidentified"):
+                slug = TRUTH_SLUG.get(truth, truth)
+                first = vocab[i].get(slug)
+                if first is not None and first < a:
+                    redundant_by_node[i] += 1   # re-ask of a known state
+            else:
+                false_by_node[i] += 1           # alarmed a state it names
+
+    periods_f = fault_periods(periods)
     out = [f"### {Path(path).name}  mode={mode}  "
-           f"faults injected={len(fault_events)}", "",
-           f"asks opened: {asks} (upstream: {upstream}) "
-           f"- labels received: {labels}",
-           "false alarms: "
+           f"fault periods={len(periods_f)}", "",
+           f"asks opened: {asks} (upstream: {upstream}, redundant: "
+           f"{sum(redundant_by_node.values())})"
+           + (f" - batch sizes min={min(batch_ns)} median="
+              f"{sorted(batch_ns)[len(batch_ns)//2]}" if batch_ns else "")
+           + f" - labels received: {labels}",
+           "false alarms (alarmed a named state during non-fault truth): "
            + "  ".join(f"{types[i]}={false_by_node[i]}"
                        for i in range(n_nodes)), "",
            "| fault | inject step | owner | owner ident (steps) "
            "| partner | partner ident (steps) |",
            "|---|---|---|---|---|---|"]
     csv_rows = []
-    for s, end, n in fault_events:
+    for s, end, n in periods_f:
         cells = [n, str(s)]
         for role, tname in (("owner", OWNER.get(n)),
                             ("partner",
@@ -149,8 +214,7 @@ def summarize(path) -> tuple:
         out.append("| " + " | ".join(cells) + " |")
     out.append("")
     for i in range(n_nodes):
-        conds = sorted({r["cond"] for r in rows_by_node[i]
-                        if r["cond"] not in ("idle", "unknown", "")})
+        conds = sorted(vocab[i])
         if conds:
             out.append(f"- node {i} ({types[i]}) named conditions: "
                        f"{', '.join(conds)}")
@@ -170,17 +234,14 @@ def summarize(path) -> tuple:
     metrics = {
         "mode": mode,
         "asks": asks,
-        "upstream": upstream,
+        "redundant_asks": sum(redundant_by_node.values()),
+        "min_batch": min(batch_ns) if batch_ns else None,
         "labels": labels,
         "false_alarms": {types[i]: false_by_node[i] for i in range(n_nodes)},
         "owner_hits": len(owner_lat),
         "owner_total": sum(1 for r in csv_rows if r[5] == "owner"),
         "owner_latencies": owner_lat,
-        "vocabulary": {types[i]: len([c for c in
-                       {r["cond"] for r in rows_by_node[i]
-                        if r["cond"] not in ("idle", "unknown", "learning",
-                                              "normal", "")}])
-                       for i in range(n_nodes)},
+        "vocabulary": {types[i]: len(vocab[i]) for i in range(n_nodes)},
     }
     return "\n".join(out), metrics
 
@@ -202,7 +263,8 @@ def compare(runs) -> str:
                    + " | ".join(str(fn(m)) for _, m in parsed) + " |")
 
     row("upstream asks (semantic calls)",
-        lambda m: f"{m['asks']} (upstream {m['upstream']})")
+        lambda m: f"{m['asks']} (redundant {m['redundant_asks']})")
+    row("min ask batch (settled samples)", lambda m: m["min_batch"])
     row("labels consumed", lambda m: m["labels"])
     row("false alarms",
         lambda m: ", ".join(f"{k}={v}" for k, v in m["false_alarms"].items()))

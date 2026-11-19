@@ -46,17 +46,36 @@ constexpr float    Z_CLAMP        = 5.0f;
 
 // ---- settle gate (user requirement 2026-11-15: transitions never train,
 // never alarm, never ask - the node decides only on settled states) ----
-// Motion = the largest per-feature jump in the condition space
-// (log2-ratio decades, feature_space.h rel()). Two EMAs of that motion:
-// fast tracks the live change rate, slow tracks the regime's own noise
-// floor. Settled = fast has plateaued onto slow for SETTLE_CALM_N
-// consecutive steps. Parameter-driven, self-calibrating per regime: no
-// fixed seconds. The stopped floor is tiny, a running floor is larger;
-// both are learned from the live signal, not configured.
-constexpr float    SETTLE_FAST_EMA  = 0.4f;   // live change-rate EMA
-constexpr float    SETTLE_SLOW_EMA  = 0.05f;  // regime noise-floor EMA
-constexpr float    SETTLE_MARGIN    = 1.5f;   // fast <= MARGIN * slow = calm
-constexpr int      SETTLE_CALM_N    = 3;      // consecutive calm steps
+// Motion is judged PER FEATURE: two EMAs of that feature's per-step jump
+// in the condition space (log2-ratio decades, feature_space.h rel()).
+// fast tracks the live change rate, slow tracks the regime's own per-step
+// motion noise. A feature is calm when fast <= MARGIN * max(slow, floor)
+// with the floor at FLOOR_UNITS * fs.unit(f) (decades of one CAL sigma):
+// a per-step jump is the DIFFERENCE of two noisy rel positions, which
+// never settles below ~2 units, so a quiet stretch cannot shrink the
+// threshold until one noisy step reads as motion (vib fmax/bands, bench
+// 2026-11-19). Settled = EVERY feature calm for SETTLE_CALM_N consecutive
+// steps: one moving feature vetoes the vector (a single-feature fault
+// onset is still a transition), and the dwell keeps a noise lull inside a
+// real transition from reading as stabilized. Parameter-driven and
+// self-calibrating per regime: no fixed seconds. Cost: decisions mature
+// ~CALM_N + ALARM_HI_N ~ 13 settled points after a state change -
+// deliberately unhurried (user decision 2026-11-19).
+constexpr float    SETTLE_FAST_EMA    = 0.4f;   // live change-rate EMA
+constexpr float    SETTLE_SLOW_EMA    = 0.05f;  // regime noise-floor EMA
+constexpr float    SETTLE_MARGIN      = 1.5f;   // fast <= MARGIN * max(slow, floor)
+constexpr float    SETTLE_FLOOR_UNITS = 2.0f;   // slow-EMA floor (CAL units)
+constexpr int      SETTLE_CALM_N      = 8;      // calm dwell before "settled"
+
+// ---- ask policy (user decision 2026-11-19: never ask on a raw onset) ----
+// An alarm on a state matching no known condition opens an episode, but
+// the node ASKS only once that episode holds ASK_MIN_BATCH SETTLED
+// samples; before that it publishes condition_id "unidentified" (alarmed,
+// batch maturing, no upstream call). A label is built from the stored
+// batch - asking earlier stores mostly transition noise. While maturing
+// the episode keeps re-identifying, so a state that resolves into a known
+// condition is relabelled and never asks at all.
+constexpr int      ASK_MIN_BATCH    = 15;
 
 // ---- TinyRL agent (network + streaming optimizer) ----
 // Default optimizer: StreamingOptimizer (Stream-X v3, nodes/core/
@@ -94,6 +113,16 @@ constexpr uint32_t QUM_REPORT_EVERY = 1000;
 // is re-identified only after this many CONSECUTIVE settled confirmations
 // (single noise vetoes must not churn episodes and batches)
 constexpr int      IDENT_DRIFT_N   = 5;
+
+// ---- per-condition score calibration (2026-11-19) ----
+// The global theta is fit once at commissioning and goes stale as soon as
+// the net trains on other regimes (bench: vib quiet score ~3 vs theta
+// ~0.3; the vfd ~9-16 vs 1.4). Every condition therefore learns its OWN
+// alarm threshold mu + k sigma from the surprise scores observed on its
+// settled matched steps, and quiet is judged against THAT band. Until a
+// condition has PERCOND_MIN_N samples its threshold is the global theta.
+constexpr int      PERCOND_MIN_N   = 16;     // samples before the band rules
+constexpr float    PERCOND_KSIG    = 3.0f;    // theta_c = mu + k sigma
 
 // ---- training policy (user decision 2026-11-15) ----
 // The net learns every LABELED condition (normal AND fault) while the

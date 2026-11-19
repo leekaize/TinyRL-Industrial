@@ -26,7 +26,17 @@ static void slugify(const char* in, char* out, size_t len) {
 
 const char* SensorNodeApp::conditionId() const {
   if (!mon_.thetaReady()) return mon_.learning() ? "learning" : "idle";
-  if (mon_.alarmed()) return ep_.isOpen() ? ep_.cond() : "unknown";
+  if (mon_.alarmed()) {
+    if (ep_.isOpen()) {
+      // "unknown" IS the ask (README contract): it may only go out once
+      // the episode holds a matured settled batch. Before that the state
+      // is "unidentified" - alarmed, batch maturing, no upstream call.
+      if (strcmp(ep_.cond(), "unknown") == 0 &&
+          ep_.count() < cfg::ASK_MIN_BATCH) return "unidentified";
+      return ep_.cond();
+    }
+    return "unknown";
+  }
   // quiet: surface the recognised state, ANY kind (user decision
   // 2026-11-15: a learned fault shows as recognised while quiet - the
   // net predicts it, so it no longer alarms; the name is the evidence)
@@ -226,9 +236,14 @@ void SensorNodeApp::applyFeedback(const char* j) {
 
   if (strcmp(action, "discard") == 0 && batch[0]) {
     // discard deletes the batch only: the model is untouched, so the
-    // same unknown will ask again on its next occurrence (user point 6)
+    // same unknown will ask again on its next occurrence (user point 6).
+    // The OPEN episode must not re-ask its own occurrence: dismissing
+    // arms ep_ask_dismissed_ until a new episode opens
     if (pend_.remove(batch)) {
       pend_.save(cfg::PENDING_FILE);
+      if (ep_pend_ >= 0 && ep_.isOpen() &&
+          strcmp(ep_.cond(), "unknown") == 0)
+        ep_ask_dismissed_ = true;
       ep_pend_ = -1;
       Serial.printf("[FB] batch %s discarded (model untouched)\n", batch);
     } else {
@@ -281,6 +296,30 @@ bool SensorNodeApp::batchMoved(const float* raw) const {
   return false;
 }
 
+// Ask policy (user decision 2026-11-19): the ask (= stored batch +
+// condition "unknown") fires only when the open episode holds
+// ASK_MIN_BATCH settled samples. Until then the state publishes
+// "unidentified" and keeps accumulating; a state that resolves into a
+// known condition re-identifies (the settled identity check in tick())
+// and never asks at all.
+void SensorNodeApp::askIfMature(uint32_t now) {
+  if (ep_pend_ >= 0 || ep_ask_dismissed_ || !ep_.isOpen() ||
+      strcmp(ep_.cond(), "unknown") != 0 ||
+      ep_.count() < cfg::ASK_MIN_BATCH) return;
+  float rm[cfg::MAX_FEATURES], rs[cfg::MAX_FEATURES];
+  ep_.relMeans(rm);
+  ep_.relStd(rs);
+  int pi = pend_.add(rm, rs, ep_.count(), now, mon_.steps());
+  if (pi >= 0) {
+    ep_pend_ = pi;
+    Serial.printf("[PEND] batch %s stored (%lu samples) - "
+                  "label or discard by id\n",
+                  pend_.at(pi).id, (unsigned long)pend_.at(pi).n);
+    pend_.save(cfg::PENDING_FILE);
+    publishCondition(true);       // condition flips unidentified -> unknown
+  }
+}
+
 uint32_t SensorNodeApp::pendingSize() const { return pend_.size(); }
 
 bool SensorNodeApp::pendingAt(int i, char* id, size_t cap,
@@ -304,6 +343,18 @@ float SensorNodeApp::libUnit(int idx, int f) const {
   if (idx < 0 || idx >= lib_.size() || f < 0 || f >= mon_.space().nFeatures())
     return 0.0f;
   return lib_.at(idx).u[f];
+}
+
+float SensorNodeApp::libTheta(int idx) const {
+  // per-condition score threshold; -1 = no condition (the caller falls
+  // back to the global theta)
+  if (idx < 0 || idx >= lib_.size()) return -1.0f;
+  return lib_.scoreTheta(idx, mon_.theta());
+}
+
+float SensorNodeApp::fsAnchor(int f) const {
+  return (f >= 0 && f < mon_.space().nFeatures()) ? mon_.space().anchor(f)
+                                                  : 0.0f;
 }
 
 void SensorNodeApp::printStatus() {
@@ -395,22 +446,13 @@ void SensorNodeApp::tick() {
         // old episode's sums are replaced; its STORED batch (if any)
         // stays for late labeling - only ep_pend_ resets
         ep_pend_ = -1;
+        ep_ask_dismissed_ = false;      // a fresh episode may ask again
         ep_.open(last_raw_, mon_.space(), now);
-        if (strcmp(ep_.cond(), "unknown") == 0) {
-          // settled unknown state -> store the batch and ask (user
-          // workflow 2026-11-15: label or discard by id, late labels ok)
-          float rm[cfg::MAX_FEATURES], rs[cfg::MAX_FEATURES];
-          ep_.relMeans(rm);
-          ep_.relStd(rs);
-          int pi = pend_.add(rm, rs, ep_.count(), now, mon_.steps());
-          if (pi >= 0) {
-            ep_pend_ = pi;
-            Serial.printf("[PEND] batch %s stored (%lu samples) - "
-                          "label or discard by id\n",
-                          pend_.at(pi).id, (unsigned long)pend_.at(pi).n);
-            pend_.save(cfg::PENDING_FILE);
-          }
-        }
+        // NO immediate ask (2026-11-19): the episode feeds settled steps
+        // below; the ask fires once its batch reaches ASK_MIN_BATCH. An
+        // episode opened mid-move also self-resolves: open() names it on
+        // the first settled re-identification instead of asking.
+        askIfMature(now);
         publishCondition(true);
         saveAll();
       } else if (out.alarm_clear) {
@@ -462,22 +504,16 @@ void SensorNodeApp::tick() {
                           "re-identifying\n");
             ep_.close("superseded", mon_.space(), now);
             ep_pend_ = -1;            // the old batch stays for late labels
+            ep_ask_dismissed_ = false;  // a new occurrence may ask again
             ep_.open(last_raw_, mon_.space(), now);
-            if (strcmp(ep_.cond(), "unknown") == 0) {
-              float rm[cfg::MAX_FEATURES], rs[cfg::MAX_FEATURES];
-              ep_.relMeans(rm);
-              ep_.relStd(rs);
-              int pi = pend_.add(rm, rs, ep_.count(), now, mon_.steps());
-              if (pi >= 0) {
-                ep_pend_ = pi;
-                Serial.printf("[PEND] batch %s stored (%lu samples) - "
-                              "label or discard by id\n",
-                              pend_.at(pi).id, (unsigned long)pend_.at(pi).n);
-                pend_.save(cfg::PENDING_FILE);
-              }
-            }
             publishCondition(true);
             saveAll();
+          } else if (ep_pend_ < 0 && ident_drift_ == 0) {
+            // batch matured AND the current settled step matches no known
+            // condition -> store + ask (2026-11-19). ident_drift_ == 0
+            // means the state is not mid-re-identification: a state that
+            // is resolving into a known condition waits for that instead.
+            askIfMature(now);
           }
         }
       } else if (mon_.thetaReady() && !mon_.alarmed() && !out.alarm_clear &&

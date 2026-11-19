@@ -81,11 +81,13 @@ void TinyRLConditionMonitor::buildNet() {
 }
 
 void TinyRLConditionMonitor::resetSettle() {
-  mot_fast_ = mot_slow_ = 0;
+  for (int f = 0; f < cfg::MAX_FEATURES; ++f)
+    mot_fast_[f] = mot_slow_[f] = 0;
   calm_ = 0;
   settled_ = true;
   prev_settled_ = true;
   has_prev_rel_ = false;
+  quiet_latch_ = false;
   sr_base_ = 1.0f;
   memset(prev_rel_, 0, sizeof(prev_rel_));
 }
@@ -146,7 +148,7 @@ void TinyRLConditionMonitor::factoryReset() {
   has_prev_ = false;
 }
 
-void TinyRLConditionMonitor::attachLibrary(const ConditionLibrary* lib) {
+void TinyRLConditionMonitor::attachLibrary(ConditionLibrary* lib) {
   lib_ = lib;
 }
 
@@ -216,17 +218,19 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
 
   // 1b) settle gate: transitions never train, never alarm, never ask
   // (user requirement 2026-11-15: decide only on settled states). See
-  // node_config.h for the rule. Volatile warmup ~20 s after arm/resume.
+  // node_config.h for the per-feature rule. Warmup after arm/resume.
   if (fs_.armed()) {
     if (has_prev_rel_) {
-      float motion = 0.0f;
+      bool calm = true;
       for (int f = 0; f < nf_; ++f) {
         float d = fabsf(fs_.rel(f, raw[f]) - prev_rel_[f]);
-        if (d > motion) motion = d;
+        mot_fast_[f] += cfg::SETTLE_FAST_EMA * (d - mot_fast_[f]);
+        mot_slow_[f] += cfg::SETTLE_SLOW_EMA * (d - mot_slow_[f]);
+        float floor_v = cfg::SETTLE_FLOOR_UNITS * fs_.unit(f);
+        if (mot_fast_[f] > cfg::SETTLE_MARGIN * fmaxf(mot_slow_[f], floor_v))
+          calm = false;               // one moving feature vetoes the vector
       }
-      mot_fast_ += cfg::SETTLE_FAST_EMA * (motion - mot_fast_);
-      mot_slow_ += cfg::SETTLE_SLOW_EMA * (motion - mot_slow_);
-      calm_ = (mot_fast_ <= cfg::SETTLE_MARGIN * mot_slow_) ? calm_ + 1 : 0;
+      calm_ = calm ? calm_ + 1 : 0;
       settled_ = calm_ >= cfg::SETTLE_CALM_N;
     }
     for (int f = 0; f < nf_; ++f) prev_rel_[f] = fs_.rel(f, raw[f]);
@@ -278,11 +282,18 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
       // novelty-modulated rate (user requirement 2026-11-15): full speed
       // while surprise is high against its own slow baseline (new regime),
       // a small floor at the baseline (stability), never zero (slow drift
-      // keeps creeping the baseline and stays trackable)
+      // keeps creeping the baseline and stays trackable).
+      // 2026-11-19: a state whose score sits INSIDE its own learned band
+      // (the net already predicts it) refines at the floor rate only -
+      // repeated full-rate entries into known states were the bench
+      // "back and forth" degradation: each re-entry scrambled every other
+      // regime's mapping a little, and the errors compounded.
       float base = fmaxf(sr_base_, 10.0f * cfg::SCORE_FLOOR);
       float frac = (surprise - base) / (cfg::NOVELTY_K * base);
       if (frac > 1.0f) frac = 1.0f;
       if (frac < cfg::LR_MIN_FRAC) frac = cfg::LR_MIN_FRAC;
+      if (km >= 0 && lib_ && lib_->converged(km, score_))
+        frac = cfg::LR_MIN_FRAC;
       opt_.set_lr(cfg::MONITOR_LR * frac);
     }
     if (update) opt_.step(-surprise, /*reset=*/false);  // delta < 0 ->
@@ -299,6 +310,11 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
   // 4) score EMA + phase machine
   score_ += cfg::SCORE_EMA * (last_surprise_ - score_);
   step_++;
+
+  // per-condition score calibration (2026-11-19): settled matched steps
+  // teach the condition its own surprise band (see step 5)
+  if (km >= 0 && lib_ && settled_ && theta_ready_)
+    lib_->observeScore(km, score_);
 
   if (!theta_ready_) {
     if (fs_.armed()) {                          // theta fit window
@@ -320,22 +336,40 @@ void TinyRLConditionMonitor::step(const float* raw, StepOut& out) {
     return;                                     // no alarms while fitting
   }
 
-  // 5) threshold logic (MVP semantics, two repairs). The 0.7..1.0 theta
-  // band grants no alarm credit (anti-flap near theta), but it DOES count
-  // as quiet (repair: requiring 60 steps UNDER 0.7*theta latched forever,
-  // bench finding 2026-11-13). Second repair (B-rule, 2026-11-14): a
-  // situation matching a NORMAL-kind library centroid is KNOWN, not
-  // unknown - the operator named it, so surprise there is the net's
-  // cross-regime confusion, not an anomaly. It counts as quiet and clears
-  // an open alarm immediately; theta stays untouched. Fault-kind centroids
-  // never quiet an alarm: a sustained real fault keeps alarming.
+  // 5) threshold logic. ALARM MEANS "I DON'T KNOW THIS STATE". The
+  // positional SCHMITT latch (in at QUIET_Q, out at MATCH_Q) covers any
+  // KNOWN condition, normal OR fault (2026-11-19): the operator named it,
+  // so a recurrence is not news - the condition name is surfaced while
+  // quiet and that is the evidence. Labeled faults that re-alarm on every
+  // visit were the operator-facing noise of the 2026-11-19 bench report
+  // ("after some back and forth everything is wrong"). Unmatched states
+  // gate on the global fit theta: unknown regimes keep alarming until
+  // named (2026-11-15 policy), drift out of a known state re-alarms.
+  // Per-condition SCORE bands as alarm thresholds were tried and rejected
+  // the same day: the score at a state is NOT stationary across training
+  // eras (the stopped score rose 1.2 -> ~6 after the speed states were
+  // learned), so a band either false-alarms on every era shift or - with
+  // an outlier gate - freezes and alarms forever. The band survives where
+  // it is sound: converged-state detection for the LR floor (step 3) and
+  // per-condition diagnostics in the library dump.
   if (!settled_) {
     lo_ = hi_ = 0;      // mid-transition: no alarm credit, no clear credit
-  } else if (km >= 0 && lib_->at(km).kind == COND_NORMAL) {
-    lo_ = cfg::CLEAR_LO_N;  hi_ = 0;
-  } else if (score_ > theta_)            { hi_++; lo_ = 0; }
-  else if (score_ > 0.7f * theta_)       { hi_ = 0; lo_++; }
-  else                                   { lo_++; hi_ = 0; }
+  } else {
+    if (quiet_latch_) {
+      int mr = lib_ ? lib_->match(last_raw_, space(), cfg::MATCH_Q) : -1;
+      if (mr < 0)
+        quiet_latch_ = false;             // left the wide radius: re-earn quiet
+    }
+    if (!quiet_latch_ && km >= 0)
+      quiet_latch_ = true;                // entered a known condition
+    if (quiet_latch_) {
+      lo_ = cfg::CLEAR_LO_N;  hi_ = 0;    // known: quiet
+    } else if (score_ > theta_) {
+      hi_++; lo_ = 0;                     // unknown and surprising: anomaly
+    } else {
+      hi_ = 0; lo_++;                     // unknown but quiet (tripwire's turf)
+    }
+  }
 
   if (!alarmed_ && hi_ >= cfg::ALARM_HI_N) {
     alarmed_ = true;
@@ -356,6 +390,16 @@ const char* TinyRLConditionMonitor::stateString() const {
 
 float TinyRLConditionMonitor::confidence() const {
   if (!theta_ready_) return 0.0f;
+  // matched: POSITIONAL confidence (1 at the centroid, 0 at the radius
+  // edge) - the score ratio against the global theta read ~0 everywhere
+  // except the commissioning state and made every known state look
+  // unsure (2026-11-19 bench report)
+  if (lib_ && fs_.armed()) {
+    int idx = -1;
+    float d = lib_->matchDist(last_raw_, fs_, cfg::QUIET_Q, &idx);
+    if (idx >= 0)
+      return fminf(1.0f, fmaxf(0.0f, 1.0f - d / cfg::QUIET_Q));
+  }
   float conf = alarmed_ ? (score_ - theta_) / fmaxf(theta_, 0.1f)
                         : 1.0f - score_ / fmaxf(theta_, 0.01f);
   return fminf(1.0f, fmaxf(0.0f, conf));

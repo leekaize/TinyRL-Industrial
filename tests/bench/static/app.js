@@ -114,6 +114,7 @@ async function poll() {
     }
   } else {
     S.marks = st.marks || [];
+    S.libs = st.libs || S.libs || [];
     if (!S.charts.length) buildCharts(st);
     st.nodes.forEach((n, i) => updateCharts(i, n));
   }
@@ -144,6 +145,67 @@ const machineMarks = {
   },
 };
 
+// span shading: teal = KNOWN (a named condition - quiet is positional,
+// the score there cannot alarm); red = alarm phase. Set c.$spans before
+// update(); each span is {a, b, color, alpha} in label-index terms.
+const spanShades = {
+  id: "spanShades",
+  beforeDatasetsDraw(c) {
+    const spans = c.$spans || [];
+    if (!spans.length || !c.chartArea) return;
+    const labels = c.data.labels || [];
+    const x = c.scales.x, area = c.chartArea, ctx = c.ctx;
+    const px = step => {
+      const idx = labels.indexOf(step);
+      return idx < 0 ? null : x.getPixelForValue(idx);
+    };
+    ctx.save();
+    spans.forEach(s => {
+      const a = px(s.a), b = px(s.b);
+      if (a === null || b === null) return;
+      ctx.fillStyle = s.color;
+      ctx.globalAlpha = s.alpha;
+      ctx.fillRect(Math.max(a, area.left), area.top,
+                   Math.min(b, area.right) - Math.max(a, area.left),
+                   area.bottom - area.top);
+    });
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  },
+};
+
+// contiguous runs of a predicate over the per-step series -> {a, b} spans
+function runsWhere(series, pred) {
+  const out = [];
+  let start = null;
+  series.forEach((v, k) => {
+    if (pred(v)) {
+      if (start === null) start = k;
+    } else if (start !== null) {
+      out.push([start, k - 1]);
+      start = null;
+    }
+  });
+  if (start !== null) out.push([start, series.length - 1]);
+  return out;
+}
+
+const KNOWN_EXCLUDED = new Set(["", "idle", "learning", "normal",
+                                "unknown", "unidentified"]);
+
+function scoreSpans(n) {
+  const spans = [];
+  runsWhere(n.series.cond, cd => !KNOWN_EXCLUDED.has(cd))
+    .forEach(([a, b]) => spans.push(
+      {a: n.series.steps[a], b: n.series.steps[b],
+       color: "#0e9f6e", alpha: 0.10}));
+  runsWhere(n.series.phase, p => p === "alarm")
+    .forEach(([a, b]) => spans.push(
+      {a: n.series.steps[a], b: n.series.steps[b],
+       color: "#dc2626", alpha: 0.15}));
+  return spans;
+}
+
 function buildCharts(st) {
   S.marks = st.marks || [];
   st.nodes.forEach((n, i) => {
@@ -153,10 +215,13 @@ function buildCharts(st) {
     const ds = document.createElement("div");
     ds.innerHTML = `<canvas id="sc${i}" height="120"></canvas>` +
                    `<div class="chartnote">score = prediction surprise (EMA of ` +
-                   `one-step error, log scale). theta = alarm threshold, fit at ` +
-                   `the calibration operating point - other operating points ` +
-                   `exceed it until labelled once, then sit quiet as recognised ` +
-                   `conditions. grey dashed = machine events.</div>` +
+                   `one-step error, log scale). RED dashed = the fit theta, ` +
+                   `fit once at commissioning - it gates only UNKNOWN states. ` +
+                   `DARK dash-dot = the threshold that actually applies: a ` +
+                   `named condition is judged against its own learned band. ` +
+                   `TEAL shading = known state (quiet is positional there - ` +
+                   `the score cannot alarm); RED shading = alarm. ` +
+                   `grey dashed = machine events.</div>` +
                    `<canvas id="fc${i}" height="140"></canvas>` +
                    `<div class="chartnote">features are min-max normalised per view ` +
                    `so mixed units share one panel.</div>`;
@@ -165,10 +230,13 @@ function buildCharts(st) {
       score: new Chart($("sc" + i), {type: "line",
         data: {labels: [], datasets: [
           {label: "score", data: [], borderColor: "#2563eb", pointRadius: 0},
-          {label: "theta", data: [], borderColor: "#dc2626",
-           borderDash: [6, 4], pointRadius: 0}]},
+          {label: "fit theta (gates unknown)", data: [],
+           borderColor: "#dc2626", borderDash: [6, 4], pointRadius: 0},
+          {label: "own band (matched condition)", data: [],
+           borderColor: "#7c2d12", borderDash: [2, 2], pointRadius: 0,
+           borderWidth: 1.5}]},
         options: {animation: false, scales: {y: {type: "logarithmic"}},
-                  plugins: [machineMarks]}}),
+                  plugins: [spanShades, machineMarks]}}),
       feat: new Chart($("fc" + i), {type: "line",
         data: {labels: [], datasets: n.feature_names.map((nm, k) =>
           ({label: nm, data: [], borderColor: COLORS[k % COLORS.length],
@@ -184,6 +252,15 @@ function updateCharts(i, n) {
   c.score.data.labels = n.series.steps;
   c.score.data.datasets[0].data = n.series.score;
   c.score.data.datasets[1].data = n.series.theta.map(v => v > 0 ? v : null);
+  // the threshold that actually applies: a named condition's own band
+  // (from the LIBX rows), falling back to the global fit theta
+  const lib = {};
+  (S.libs[i] || []).forEach(e => { lib[e.slug] = e.theta; });
+  c.score.data.datasets[2].data = n.series.cond.map((cd, k) => {
+    const t = lib[cd];
+    return (t && t > 0) ? t : (n.series.theta[k] > 0 ? n.series.theta[k] : null);
+  });
+  c.score.$spans = scoreSpans(n);
   c.score.update("none");
   // per-feature min-max normalisation so mixed units share one panel
   c.feat.data.labels = n.series.steps;

@@ -36,15 +36,24 @@ flowchart LR
    freshness (`node_runtime.cpp`).
 2. `mon_.step()` standardizes features, predicts the next step, takes one
    bounded update, updates the score EMA (`tinyrl_monitor.cpp`, README
-   Algorithm 1). The settle gate holds all three off mid-transition, and
-   the update itself runs only on settled steps of LABELED conditions.
-3. Score above theta for 5 steps: `EpisodeManager::open()` matches the
-   profile against centroids; no match within r = 0.30 means `unknown` -
-   the settled state is stored as a pending batch and the node asks
+   Algorithm 1). The settle gate (v2, per-feature motion EMAs floored at
+   2 CAL units, 8-step dwell) holds all three off mid-transition, and the
+   update itself runs only on settled steps of matched (LABELED)
+   conditions - at the floor rate once the condition's own score band
+   says the net has converged there.
+3. ALARM MEANS "I DON'T KNOW THIS STATE" (2026-11-19): quiet is
+   positional - a Schmitt latch (in at QUIET_Q = 3 units, out at
+   MATCH_Q = 4) covers any named condition, normal or fault, so a state
+   inside a centroid never alarms and recognized faults recur quietly.
+   An unmatched state scoring above the fit theta for 5 settled steps
+   opens an episode: `open()` names it if the position matches a
+   centroid, else the state publishes `unidentified`, feeds settled
+   samples, and at ASK_MIN_BATCH = 15 stores a pending batch and asks
    (`episode.cpp`, `pending_store.cpp`, README Algorithms 2 + 3).
-4. While alarmed, `ep_.feed()` accumulates per-feature means; on clear or
-   `normal` feedback the episode closes and the centroid refines by EMA
-   0.9/0.1 (`episode.cpp:66-75`).
+4. While alarmed, `ep_.feed()` accumulates per-feature means; on clear
+   the episode closes; the centroid refines by EMA 0.9/0.1 on close of
+   NORMAL-kind episodes only (a fault episode's mean folds in the
+   recovery tail and poisons the centroid, 2026-11-19).
 5. `UnsMessaging` publishes only on state or condition change; autosave
    rewrites the flash files at most every 5 min (flash-wear budget,
    `node_config.h` AUTOSAVE_MS; the pending store saves on batch events).
