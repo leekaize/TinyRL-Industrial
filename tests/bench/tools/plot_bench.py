@@ -78,9 +78,11 @@ def fig_detection(rows, outdir):
     fig, ax = plt.subplots(figsize=(8.2, 3.6), dpi=150)
     ax.axvspan(quiet[0]["step"], onset, color=GREEN, alpha=0.07, label="quiet")
     ax.axvspan(onset, anom[-1]["step"], color=RED, alpha=0.07, label="anomaly")
-    ax.plot([r["step"] for r in quiet], [r["score"] for r in quiet], color=BLUE,
+    # ONE continuous line over every trace row: the persistence round-trip
+    # between the quiet and anomaly spans logs no rows, so drawing the two
+    # tagged spans separately left a visible break in the score line
+    ax.plot([r["step"] for r in rows], [r["score"] for r in rows], color=BLUE,
             label="score (EMA of surprise)")
-    ax.plot([r["step"] for r in anom], [r["score"] for r in anom], color=BLUE)
     ax.axhline(theta, color=RED, ls="--", lw=1.2,
                label="fit theta = mu + 4 sigma (gates unknown states)")
     ax.axvline(onset, color=ORANGE, ls="-", lw=1.2, label="anomaly onset")
@@ -100,7 +102,9 @@ def fig_detection(rows, outdir):
     ax.set_title("One-step prediction detector: quiet, then injected anomaly "
                  "(alarm = unknown state)")
     ax.grid(alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8)
+    # lower right put the legend on top of the score line (framealpha 0.8
+    # made it look like the line broke); upper left is empty space
+    ax.legend(loc="upper left", fontsize=8)
     fig.tight_layout()
     fig.savefig(outdir / "detection-trace.png")
     plt.close(fig)

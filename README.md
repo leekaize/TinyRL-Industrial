@@ -48,6 +48,23 @@ pio device monitor                          # 115200, USB-CDC
 | `m` | [monitor] status (step/score/theta/params/lib/pubs/qum/heap) |
 | `reset` | [wipe] factory reset stored state, typed in full |
 
+### Capture a hardware session, replay it offline
+
+The node prints a machine line every 2 s (`[HDR]` feature identity once
+on boot, then `[RAW] ts_ms=<ms> <features...> state= cond= conf= score= theta=`).
+Capture it, analyse it, rerun it through the real core without hardware:
+
+```bash
+python3 tools/seriallog.py                    # capture: live view + raw .log + pandas .csv
+bash tests/replay.sh data/serial/<file>.log   # rerun the session in the host core
+```
+
+The replay re-learns from an empty model at the captured start moment,
+applies the captured labels, and compares every decision against the
+captured ground truth. Change a `cfg::` knob, rerun, watch the match
+rate move. Captures land in `data/serial/` (gitignored; force-add a
+benchmark run if you want it in history).
+
 ## First-run lifecycle
 
 ```mermaid

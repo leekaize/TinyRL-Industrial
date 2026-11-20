@@ -79,7 +79,7 @@ machine learning; LLM agents; Industry 5.0.
 > How much resources (and network bandwidth) do we save on the edge and
 > agents, compared to node-only and agent-only architectures?
 
-**Current answer (preliminary):** all learning/inference on a 320 KB-RAM chip with ~70% free, zero cloud round-trips; uplink ~1 line/50 s vs 20 raw samples/s → **400× fewer messages** (confirm from payloads).
+**Current answer (measured 2026-11-20):** all learning/inference on a 320 KB-RAM chip with ~70% free, zero cloud round-trips; over the 2,400-step two-node tour (run-20261120-120228) the nodes published 113 uplink messages (93 condition changes + 18 episode events + 2 discovery docs) vs 4,800 raw feature vectors at the same 1 Hz cadence → **42× fewer messages**. The earlier ~400× figure assumed an unmeasured 20 Hz raw rate and is retired; payload-byte accounting at native sensor rates stays open.
 
 **Evidence:** `print_memory_info()` runtime output; [README § Architecture cheat sheet](README.md#architecture-cheat-sheet)
 
@@ -89,7 +89,9 @@ machine learning; LLM agents; Industry 5.0.
 - [ ] Audit the test suite + bench for streaming-evaluation purity: score each step with data < t only, no retrospective θ/normalizer fit (Mueller §3.1)
 - [ ] Measure bytes/min up+down per architecture from MQTT payload logs
 - [ ] Table: RAM / flash / CPU / bandwidth / messages per architecture
-- [ ] Confirm the 400× message ratio with measured numbers
+- [x] Message-count ratio measured 2026-11-20: 113 uplink vs 4,800 raw
+      vectors = 42× (runs run-20261120-120228 / run-20261120-120406);
+      payload-BYTE audit at native sensor rates remains open
 
 ### RQ3: Accuracy scaling with more self-contained devices
 
@@ -217,12 +219,13 @@ the only Python dependency (`python3 -m pip install --user matplotlib`).
 
 ![Detection trace](assets/detection-trace.png)
 
-The score (EMA of the z-space prediction error) on a quiet stream stays under
-0.89 θ for 200 steps: zero false alarms. An injected anomaly lifts it about
-two orders of magnitude within a few steps, and the alarm fires when the
-score holds above θ for 5 consecutive steps: +4 steps after onset here
-(`ALARM_HI_N = 5`, `node_config.h`). This is the RQ3 detection-latency
-measurement at N = 1 on the synthetic stream.
+The score (EMA of the z-space prediction error) on the quiet stretch stays
+under θ throughout: zero false alarms. An injected anomaly lifts it more
+than an order of magnitude within a few steps, and the alarm opens +14 steps
+after onset: the 8-step settle dwell, then the alarm credit as the score
+crosses θ (`ALARM_HI_N = 5`, `node_config.h`; the regenerated figure
+annotates the decomposition). This is the RQ3 detection-latency
+measurement at N = 1 on the synthetic stream (figure regenerated 2026-11-20).
 
 ### Plasticity audit (Dohare 2024 correlates, 100k steps, 4 regime shifts)
 
@@ -232,11 +235,13 @@ The three Dohare correlates over a 100k-step bench with regime shifts every
 25k steps (machine life). Since the 2026-11-15 training policy the bench
 emulates the operator: every regime is labeled 20 steps after it settles,
 so the net trains across labeled regimes and the counters measure the
-deployed policy. Dead units stay at 0.00. Mean |w| grows 0.0111 → 0.0265
-(+139%) across the run - bounded, vs +468% under the old ungated policy:
+deployed policy. Dead units stay at 0.00. Mean |w| grows 0.0111 → 0.0253
+(+128%) across the run - bounded, vs +468% under the old ungated policy:
 training only on labeled+settled steps removed the runaway weight growth.
-Effective rank settles at 1.77 after the shifts (was 1.15). The 48M-step
+Effective rank settles at 1.88 after the shifts (was 4.51). The 48M-step
 question (plateau or divergence?) remains a one-command measurement.
+(Re-measured 2026-11-20 with the regenerated figure; the 2026-11-16 log row
+keeps its original figures, append-only.)
 
 
 ## Experiment log
@@ -253,6 +258,7 @@ question (plateau or divergence?) remains a one-command measurement.
 | 2026-11-16 | Test suite reorganisation + perf tracking: `tests/host/` (C++ sources) + `tests/bench/` (server, scenarios, tools); sim gains per-step compute timing (stage 2, host proxy); `run_mcu.sh` adds the real-toolchain footprint check; long-run bench emulates the operator (labels each regime) so the plasticity counters measure the deployed policy | 2, 3 | mean \|w\| 100k: 0.0111 → 0.0265 (+139%, was +468% ungated), eff rank 1.77, dead 0.00; per-step compute avg 6-8 µs on x86 (budget 1 s); flash/RAM table in tests/README.md | `tests/run_tests.sh`, `tests/run_mcu.sh`, `assets/plasticity-bench.png` |
 | 2026-11-16 | Runtime footprint instrumentation, harness-side only (node code untouched): stub `fileSize()` accessor + end-of-run `[FLASH]` report in bench_host; `/export` flushes the bench process (library dump K first, then q; export skips K when done). Single-node two-way tours measure the exact flash state: g100 6,570 B / vib 7,416 B (model.bin 268 B, net.bin 5,504/6,024 B, conditions.jsonl 792/1,118 B, pending empty at end of tour); learning-state RAM composed from code constants: 22.6 KB g100 / 24.7 KB vib (values + grads + etraces + vmax = 4 arrays x params, monitor state 268 B, library 116 B/condition, pending 88 B/batch, cap 8); per-step compute avg 4 µs, max 38 µs (2000 steps) | 2 | runs run-20261116-133945 (g100), run-20261116-134119 (vib); paper Table III updated to static + runtime columns | `tests/stub_esp32/WiFi.h`, `tests/host/bench_host.cpp`, `tests/bench/app.py` |
 | 2026-11-19 | Collective consult removed (user decision): no sibling verdicts (known / corroborated / unconfirmed / unconsulted), no same-profile centroid means sharing. Labelling = one webbench label applied to every node of the SAME machine with an open ask (same-timeframe event), each node learning from its OWN stored batch; the agent correlates published State/* instead. `episodeMeans` / `shareLabel` / `libMatch` left unused and removed from node core; node behaviour unchanged (the consult never fired across the two profiles and never auto-resolved an ask) | 1, 3 | 4/4 host stages green; smoke.py PASS (one label resolves both nodes' asks, re-injection matched locally, no ask); probe_pending.py PASS (discard leaves the other node's ask); paper_tour.py PASS: owner alarms 4/5 fault windows, false alarms vfd 3 / vib 2, re-tour 0 asks, 7 batches labeled - measured numbers unchanged | `tests/host/bench_host.cpp`, `tests/bench/app.py`, `tests/bench/static/app.js`, `nodes/core/node_runtime.*` |
+| 2026-11-20 | Paper-freeze revalidation: host suite rebuilt 5/5 (`tests/logs/host_tests_20261120_120032.log`); paper_tour re-run in BOTH modes on the deterministic seed; bandwidth measured from the run export; plot_bench legend fix (the score line no longer hides under the legend; one continuous line across the persistence gap); new `plot_compact.py` compact single-node paper figure; all three assets regenerated | 2, 3 | two-way: asks 9 (0 redundant, batches n=15), FA 0/0, owner 4/4 (first 14-16 steps, re-occurrence 1), vocab 5/6, re-tour 0 asks; node-only: 12 node-local asks, FA 0/0, owner 4/4 (14-16), vocab 1/1; uplink 113 messages (both nodes) vs 4,800 raw vectors at 1 Hz = 42× fewer; plasticity 100k re-run: mean \|w\| 0.0111 → 0.0253 (+128%), eff rank 4.51 → 1.88, dead 0.00 | `tests/bench/runs/run-20261120-120228.jsonl`, `run-20261120-120406.jsonl`, `tests/logs/host_tests_20261120_120032.log`, `tests/bench/tools/plot_compact.py`, `assets/detection-trace.png`, `assets/plasticity-bench.png`, `assets/run-vib-compact.png` |
 
 ## Literature anchors
 

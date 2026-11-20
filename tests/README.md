@@ -36,6 +36,8 @@ tests/
     ├── tools/                analysis of exported runs
     │   ├── summarize_run.py  paper metrics + cross-run contrast table
     │   ├── plot_run.py       per-node figures (truth strip, score/θ, rel rows)
+    │   ├── plot_compact.py   compact single-node paper figure (truth, all rel
+    │                         features in one axes, score/θ, asks/labels)
     │   ├── diag_space.py     condition-space geometry: why states match/veto
     │   └── plot_bench.py     sim logs → RESEARCH.md figures
     └── runs/                 exported runs (gitignored)
@@ -69,7 +71,7 @@ TOURCHECK OK: asks mature at 15+, owner-only asks, re-tour zero asks, full vocab
 | `5/5 TOURCHECK OK` | the ask/settle discipline holds on the real tour: asks mature at >= 15 settled samples, only owner modalities ask, 20 churn cycles with zero alarms and zero asks, full vocabulary |
 | `HOST-TEST GREEN` | the single greppable verdict line |
 
-## Current performance (validated 2026-11-19, synthetic bench)
+## Current performance (validated 2026-11-20, synthetic bench, deterministic seed)
 
 Headline contrast, two-way vs node-only baseline
 (`bash tests/bench/scenarios/paper_tour.py` in both modes, then
@@ -80,7 +82,7 @@ Headline contrast, two-way vs node-only baseline
 | upstream asks (semantic calls) | 9 (redundant 0, every batch = 15 settled samples) | 0 (asks stay on the node) |
 | labels consumed | 9 | 0 |
 | false alarms (alarmed a named state during non-fault truth) | g100=0, vib=0 | g100=0, vib=0 |
-| fault identification (owner) | 4/4 hits, latency 0-31 steps | 4/4 hits, latency 12-30 steps |
+| fault identification (owner) | 4/4 hits, first occurrence 14-16 steps, re-occurrence 1 step | 4/4 hits, 14-16 steps |
 | condition vocabulary (final) | g100=5, vib=6 | g100=1, vib=1 |
 
 Reading: detection is the SAME without the semantic loop - the payoff of
