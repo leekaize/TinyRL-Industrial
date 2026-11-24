@@ -9,8 +9,18 @@ tests/bench/runs/
 # host test logs (full stage output; console shows verdict lines only)
 tests/logs/
 
-# captured hardware sessions (raw serial + parsed csv; replay input)
-data/serial/
+# session handoffs are working-tree-only records (RESEARCH.md carries the
+# durable content and cites these files as local evidence pointers)
+SESSION-HANDOFF-*.md
+
+# recorded campaign: the suite's runtime inputs + the irreplaceable raw
+# captures are tracked; streams, study reports and broken exports stay
+# local (all regenerate from data/raw/ or are superseded)
+data/serial/*
+!data/serial/collect_20261121_211534.csv
+!data/serial/collect_20261121_211534.raw.csv
+data/analysis/*
+!data/analysis/vib_4feat.csv
 
 # personal: not part of the public repo
 .anki
