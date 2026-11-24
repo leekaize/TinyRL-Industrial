@@ -10,7 +10,10 @@ uint16_t G100Modbus::crc16(const uint8_t* b, size_t n) {
   return c;
 }
 
-uint32_t G100Modbus::byteTimeUs(uint32_t baud) { return 10000000UL / baud; }
+// 11 bits per char since the 8E1 bus (2026-11-20): the parity bit
+// lengthens T3.5 (used by listen()'s gap detector) and the turnaround
+// delay. 10-bit timing could truncate frames mid-reply.
+uint32_t G100Modbus::byteTimeUs(uint32_t baud) { return 11000000UL / baud; }
 uint32_t G100Modbus::t35Us() {
   return g100::BAUD > 19200 ? 1750 : byteTimeUs(g100::BAUD) * 35 / 10 + 200;
 }

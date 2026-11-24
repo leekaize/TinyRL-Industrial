@@ -1,3 +1,4 @@
 - g100_regs.h                   LSLV-G100 register map + scaling (bench-proven)
-- g100_modbus.h/.cpp            Modbus-RTU transport (verbatim from MVP)
-- g100_sensor.h/.cpp            G100Sensor : ISensorNode → {i, slip, vdc, tq}
+- pm1125h_regs.h                PM1125H meter map, same bus 8E1, slave 2
+- g100_modbus.h/.cpp            Modbus-RTU transport (9600 8E1 since 2026-11-20)
+- g100_sensor.h/.cpp            G100Sensor : ISensorNode → {fset, v, i, pf}

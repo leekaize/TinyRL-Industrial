@@ -3,6 +3,9 @@
 // Bench-proven transport from the MVP, kept byte-for-byte (only wrapped
 // in a class). Do not "optimize": the echo/gap/T35 handling encodes real
 // bench behavior of the G100 + MAX485 chain.
+// 2026-11-20: SERIAL_8N1 -> SERIAL_8E1 - the PM1125H meter joined the
+// bus; both devices run 8E1 (bench-confirmed). byteTimeUs moved to
+// 11 bits/char so T3.5 follows the framing (see g100_modbus.cpp).
 // =====================================================================
 #pragma once
 #include <Arduino.h>
@@ -22,7 +25,7 @@ public:
   void begin() {
     pinMode(g100::PIN_DE, OUTPUT);
     digitalWrite(g100::PIN_DE, LOW);
-    rs_.begin(g100::BAUD, SERIAL_8N1, g100::PIN_RX, g100::PIN_TX);
+    rs_.begin(g100::BAUD, SERIAL_8E1, g100::PIN_RX, g100::PIN_TX);
   }
 
   // Build a read-Holding-Registers frame (returns frame length).

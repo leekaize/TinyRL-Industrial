@@ -1,10 +1,13 @@
 // =====================================================================
 // g100_regs.h -- LSIS LSLV-G100 register map (ENVIRONMENT-SPECIFIC).
 // Bench-proven Modbus facts, kept verbatim from the MVP - do not
-// re-derive: FC03/06/16 only, wire addr = doc addr - 1, max FC03 qty=8,
-// 9600 8N1. Drive settings (G100 manual 7.2.2):
-//   CM.01=1 CM.02=0 CM.03=3 CM.04=0 (CM changes need a drive power-cycle;
-//   DriveView9 must stay offline - only ONE RS485 master).
+// re-derive: FC03/06/16 only, wire addr = doc addr - 1, max FC03 qty=8.
+// 2026-11-20: bus is 9600 8E1 (VFD + PM1125H meter, slave 2),
+// bench-confirmed. Same-day bench finding: the drive was found back on
+// 8N1 after wiring work - root cause unclear (DriveView9 session or an
+// unsaved CM change). Re-check CM parity after any DriveView9 session or
+// drive reconfig; CM changes need a drive power-cycle. DriveView9 must
+// stay offline - only ONE RS485 master.
 // RS485 wiring: MAX485 DE+RE -> GPIO8, RO -> GPIO18, DI -> GPIO17.
 // =====================================================================
 #pragma once
@@ -26,7 +29,9 @@ constexpr uint8_t  QTY_A2     = 1;
 constexpr uint16_t DOC_BLK_B  = 0x0310;  // docs 0h0310..0h0317
 constexpr uint8_t  QTY_B      = 8;
 constexpr uint16_t DOC_TEMP   = 0x032D;
-constexpr uint32_t POLL_PERIOD_MS = 300;
+// 2026-11-20: 5 VFD + 4 meter transactions ~ 300 ms of wire time at
+// 9600 8E1 (estimate) - bench-check the verbose dt before tightening.
+constexpr uint32_t POLL_PERIOD_MS = 400;
 
 constexpr int PIN_DE = 8;
 constexpr int PIN_RX = 18;

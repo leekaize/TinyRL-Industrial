@@ -3,8 +3,10 @@
 //
 // This is the WHOLE node-specific code. Everything else is the general
 // core compiled unchanged for every sensor node. The sensor package
-// (nodes/sensors/vibration_adxl/) provides 6 features: vibration RMS,
-// four FFT band powers, dominant frequency.
+// (nodes/sensors/vibration_adxl/) provides 4 features (locked 2026-11-21
+// from the real rig capture): y-axis RMS, spectral entropy, margin,
+// x-axis RMS. Console 'R' streams raw x,y,z samples at 200 Hz for the
+// offline feature study (tools/feature_selection.py --capture).
 //
 // LIFE CYCLE (same core as vfd_g100_node):
 //   boot -> restore model + net + library from LittleFS
@@ -34,8 +36,6 @@ static constexpr uint16_t MQTT_PORT = 1883;
 static const char* DEV_ID  = "vib-01";             // MQTT client id
 
 // UNS base path - must match uns/uns_namespace.json (rename in BOTH).
-// NOTE: this node is NOT yet in uns/uns_namespace.json - add its tree
-// (and the uns_schema entry if fields change) before deploying.
 #define UNS_BASE  "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01"
 // ----------------------------------------------------------------------
 
