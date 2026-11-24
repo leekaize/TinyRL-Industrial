@@ -36,7 +36,7 @@ For modular self-contained ESP32-S3 nodes that watches a machine, learns its "no
 | Area | MVP (`vfd_streamq.cpp`) | This rewrite |
 |---|---|---|
 | Learning | hand-rolled 24-bin transition histograms + NLL | TinyRL `nn::Sequential` (sparse Linear → LayerNorm → LeakyReLU ×2) doing **one-step prediction**; reward = −surprise; optimized by **ObGD** (eligibility traces + overshooting bound) from `examples/stream_x/src/obgd.h` |
-| Normalization | log-binning only | two spaces with distinct jobs: frozen log-range (condition library) + TinyRL z-scores (network input, frozen after theta fit) |
+| Normalization | log-binning only | two spaces with distinct jobs: frozen log-range (condition library) + the network's observation, era-gated: z-scores frozen after theta fit (legacy z env), rel levels (rel-obs A/B arm), per-condition centered residuals `(rel - c)/u` (cond-obs env, `MODEL_VERSION` 8) |
 | Weights | none to persist | `net.bin`: Linear layers serialized verbatim; node resumes monitoring after reboot with zero relearning (plug-and-play) |
 | Score | NLL EMA | z-space prediction error EMA (stationary ~O(1) under normal, spikes on regime change) — theta = μ + 4σ unchanged |
 | Episodes/library/feedback/UNS | — | **semantics preserved 1:1** (same topics, same actions, same console), but generic over the feature profile |
@@ -52,9 +52,9 @@ unused here because a condition monitor has no action space — the update
 loop mirrors `stream_q.h` so a future control node (setpoints, derating)
 can drop StreamQ in beside the monitor.
 
-Resource cost of the TinyRL step (H=32, nf=4): **1,348 params ≈ 10 KB with
-traces + gradients**, forward+backward+ObGD at 1 Hz ≪ 0.1% CPU on the LX7
-@240 MHz. `AG_ESP32_DSP` routes `trace_update_l1` / `fma_scalar` through the
+Resource cost of the TinyRL step (H=32, nf=4): **1,348 params, ~16 KB
+optimizer state (grads + traces + leaky max)**, forward+backward+
+StreamingOptimizer step at 1 Hz ≪ 0.1% CPU on the LX7 @240 MHz. `AG_ESP32_DSP` routes `trace_update_l1` / `fma_scalar` through the
 hand-tuned ESP32-S3 kernels; `CONFIG_SPIRAM_USE_MALLOC` keeps the
 transparent-PSRAM behavior for future bigger nets.
 
@@ -110,8 +110,11 @@ the next build. Each node keeps its own `/model.bin`, `/net.bin`,
     Omit `batch` to label the live episode directly.
   - `{"action":"discard","batch":"P0001"}` (drop the batch, model untouched).
   - `{"action":"normal"}` (false alarm → theta +10%), `{"action":"fault"}` (−5%),
-  - `{"action":"start"}` (begin learning; machine STOPPED - the CAL baseline
-    auto-registers as the `op_stopped` normal condition).
+  - `{"action":"start"}` (begin learning on a representative machine state; the
+    CAL baseline auto-registers as the `op_stopped` normal condition - that
+    slug is kept whatever state commissions the node. With the PM1125H meter
+    in the feature set, commission on a RUNNING state: PF is NaN at no load
+    and the all-or-nothing poll fails on a stopped machine).
 - `…/State/node_info` (retained, on connect): discovery doc for the agent.
 
 Console: `s` start learning · `r` poll now · `l` library · `p` pending
@@ -123,7 +126,8 @@ single-key `L`).
 
 boot → restore `model.bin` + `net.bin` + `conditions.jsonl` + `pending.jsonl`
 → theta ready ⇒ straight back to monitoring (no relearning)
-→ fresh ⇒ IDLE until `s` / `{"action":"start"}` (machine STOPPED) →
+→ fresh ⇒ IDLE until `s` / `{"action":"start"}` (representative state; with
+the meter: RUNNING) →
 ~30 s CAL (ranges; baseline auto-registers as `op_stopped`) →
 ~30 s theta fit (network trains on the stream the whole time) →
 monitoring: the settle gate holds decisions off during transitions

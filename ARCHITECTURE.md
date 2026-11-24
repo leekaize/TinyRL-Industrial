@@ -34,22 +34,41 @@ flowchart LR
 
 1. `SensorNodeApp::tick()` polls the sensor (Modbus registers) and gates on
    freshness (`node_runtime.cpp`).
-2. `mon_.step()` standardizes features, predicts the next step, takes one
-   bounded update, updates the score EMA (`tinyrl_monitor.cpp`, README
-   Algorithm 1). The settle gate (v2, per-feature motion EMAs floored at
-   2 CAL units, 8-step dwell) holds all three off mid-transition, and the
-   update itself runs only on settled steps of matched (LABELED)
-   conditions - at the floor rate once the condition's own score band
-   says the net has converged there.
-3. ALARM MEANS "I DON'T KNOW THIS STATE" (2026-11-19): quiet is
-   positional - a Schmitt latch (in at QUIET_Q = 3 units, out at
-   MATCH_Q = 4) covers any named condition, normal or fault, so a state
-   inside a centroid never alarms and recognized faults recur quietly.
-   An unmatched state scoring above the fit theta for 5 settled steps
-   opens an episode: `open()` names it if the position matches a
-   centroid, else the state publishes `unidentified`, feeds settled
-   samples, and at ASK_MIN_BATCH = 15 stores a pending batch and asks
-   (`episode.cpp`, `pending_store.cpp`, README Algorithms 2 + 3).
+2. `mon_.step()` maps the features into the era's observation, predicts
+   the next step, takes one bounded update, updates the score EMA
+   (`tinyrl_monitor.cpp`, README Algorithm 1). The observation is
+   era-gated: frozen z (legacy), anchored-ratio levels (rel-obs
+   ablation), or per-condition centered residuals
+   obs = (rel - c_matched) / u_matched with nearest-condition frame for
+   unknowns (current cond-obs arm). The settle gate (v2, per-feature
+   motion EMAs floored at 2 CAL units, 8-step dwell) holds all three off
+   mid-transition, and the update itself runs only on settled steps of
+   matched (LABELED) conditions - at the floor rate once the condition's
+   own score band says the net has converged there. A label arriving
+   mid-settled-state rescales the cond-era input frame, so the optimizer
+   state is dropped on frame switches (bench 2026-11-21: without it the
+   heal took thousands of steps).
+3. ALARM MEANS "I DON'T KNOW THIS STATE": quiet and alarm are era-
+   gated (build flag, `node_config.h` MODEL_VERSION). The LEGACY z era
+   (default env) keeps the 2026-11-19 positional Schmitt latch (in at
+   QUIET_Q = 3 units, out at MATCH_Q = 4) over any named condition, with
+   an unmatched state alarming after 5 settled steps above the fit theta.
+   The BAND-GATED eras (rel-obs ablation, and the current cond-obs arm)
+   replace the latch with the condition's OWN calibrated evidence: a
+   matched state alarms only when the leaky evidence accumulator
+   (`ACC_ALARM = 5`, fed by the score's excess over the condition's own
+   surprise band and, in the cond era, by the positional aggregate's
+   excess over the condition's own positional band) crosses its trigger;
+   quiet LEAKS the accumulator and never resets it. Radius-edge
+   stickiness (hardware 2026-11-21): a state that drifts past QUIET_Q
+   stays matched to its LAST condition while within MATCH_Q - slow meter
+   wander must not re-judge a known state against the fit theta; beyond
+   MATCH_Q the state is genuinely unknown. An unmatched state
+   still gates on the global fit theta and opens an episode the same way:
+   `open()` names it if the position matches a centroid, else the state
+   publishes `unidentified`, feeds settled samples, and at
+   ASK_MIN_BATCH = 15 stores a pending batch and asks (`episode.cpp`,
+   `pending_store.cpp`, README Algorithms 2 + 3).
 4. While alarmed, `ep_.feed()` accumulates per-feature means; on clear
    the episode closes; the centroid refines by EMA 0.9/0.1 on close of
    NORMAL-kind episodes only (a fault episode's mean folds in the
@@ -62,12 +81,16 @@ flowchart LR
 
 | Space | Frozen when | Used for | Never for |
 |---|---|---|---|
-| z-space (Welford moments) | end of theta fit | network input, surprise, theta | condition matching |
-| anchored-ratio decades (rel = log2((x+A)/(mu+A)), A = 6 CAL sigma) | end of CAL | condition centroids + per-condition match units, episode summaries | network input |
+| z-space (Welford moments) | end of theta fit | network input in the legacy z era, surprise, theta | condition matching |
+| anchored-ratio decades (rel = log2((x+A)/(mu+A)), A = 6 CAL sigma) | end of CAL | condition centroids + per-condition match units, episode summaries, and - centered per condition, (rel - c)/u - the cond-era network input | raw z-scores for matching |
 
 The split is what protects labels from network drift: centroids live in a
 space that stopped moving at the end of CAL, so a label learned today still
-matches weeks later no matter what the net does.
+matches weeks later no matter what the net does. The cond era goes one
+step further: the network itself reads the anchored-ratio frame, centered
+on the matched condition's own centroid and scaled by its own units, so
+every regime's training manifold sits at 0 and the surprise is stationary
+per regime.
 
 ### Boot and persistence
 
@@ -89,8 +112,9 @@ flowchart TD
 
 What each file holds (`persistence.cpp`, `condition_library.cpp`):
 
-- `/model.bin` v4: score stats + theta + frozen ranges + normalizer moments
-  (the POD mirror `ModelBlobV4`, magic `TRL4`).
+- `/model.bin`: score stats + theta + frozen ranges + normalizer moments,
+  era-locked by `MODEL_VERSION` (6 z / 7 rel / 8 cond; a file from another
+  era is rejected and the node relearns; magic `TRL4`).
 - `/net.bin`: every Linear layer's weights and bias verbatim; the topology is
   re-validated on load, a mismatch means the pair is broken and the node
   relearns.

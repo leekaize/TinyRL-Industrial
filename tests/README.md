@@ -6,15 +6,60 @@ the multi-node scenarios, and an MCU footprint check with the real
 toolchain. Run from the repo root:
 
 ```bash
-bash tests/run_tests.sh      # 5-stage host suite (fast, assert-based)
+bash tests/run_tests.sh      # 6-stage host suite (fast, assert-based)
 bash tests/run_mcu.sh        # PlatformIO build: flash/RAM per node vs budget
+bash tools/stage6.sh         # stage 6 alone: the cond-era two-node tour
+                             # (full output -> tests/logs/stage6_*.log)
 ```
+
+REAL DATA IS THE DEFAULT (2026-11-22c): the tour stages and the web
+bench stream the MODBUS collect campaign
+(data/serial/collect_20261121_211534.csv) through machine_model.hpp.
+The vibration node falls back to its synthetic generator until its
+capture lands at data/analysis/vib_4feat.csv. Switches:
+
+```bash
+TINYRL_SYNTH=1      # force the synthetic world everywhere (debugging)
+TINYRL_VIB_SYNTH=1  # pin ONLY the vibration node to synthetic;
+                    # unset it once the capture is recorded and trusted
+TINYRL_BENCH_FLAGS   # bench era override; default = the deployed
+                        # cond era. "-DMONITOR_REL_OBS" = the rel paper
+                        # arm, empty = the z era ablation arm
+TINYRL_RAMP_SYNTH=0  # ablate the 1-second transition ramps (one
+                        # midpoint row per ordered block pair). ON by
+                        # default since 2026-11-22g: the physical machine
+                        # ramps ~1 s between states, so the ramped fixture
+                        # is the honest one. The churn race it exposed is
+                        # fixed at the fire check (the score arm yields
+                        # while the geometry is quiet - the floor-move
+                        # yield, tinyrl_monitor.cpp 2026-11-22g)
+```
+
+Detection-chain ablation switches (the paper's Table A-III): one
+mechanism family per build, all default ON (bit-identical to the
+shipped detector). Pass with the bench flags:
+
+```bash
+TINYRL_BENCH_FLAGS="-DMONITOR_COND_OBS -DABL_POS_EVIDENCE=0" \
+    python3 tests/bench/scenarios/paper_tour.py --mode two-way --dwell 80
+```
+
+Switches live in node_config.h: ABL_SETTLE_GATE, ABL_PERCOND_BAND,
+ABL_FLOOR_REANCHOR, ABL_POS_EVIDENCE, ABL_ACCUMULATOR,
+ABL_STICKY_HOLD, ABL_YARDSTICK_GROWTH, ABL_UNKNOWN_PERSIST.
+`-DMONITOR_REL_OBS` ablates the cond-centered observation frame.
+`tools/run_ablation.sh` runs every family in parallel (one bench per
+port, TINYRL_BENCH_BIN per instance, exports tagged with the port);
+summarize with `tests/bench/tools/ablation_table.py`. Exact per-node
+flash state needs a single-node tour: `--nodes 1 --profile g100|vib`
+(the two-node [FLASH] report shares one stub namespace, last writer
+wins - bench_host.cpp).
 
 ## Layout
 
 ```text
 tests/
-├── run_tests.sh              the 5-stage host suite (assert-based, CI-able)
+├── run_tests.sh              the 8-stage host suite (assert-based, CI-able)
 ├── run_mcu.sh                real-toolchain build: flash/RAM vs budget
 ├── stub_esp32/               Arduino/WiFi/PubSubClient/LittleFS stubs
 ├── host/                     C++ sources
@@ -39,6 +84,8 @@ tests/
     │   ├── plot_compact.py   compact single-node paper figure (truth, all rel
     │                         features in one axes, score/θ, asks/labels)
     │   ├── diag_space.py     condition-space geometry: why states match/veto
+    │   ├── plot_percond_trace.py  stage-H HTRACE logs -> 3-era A/B figure
+    │   ├── plot_percond_tour.py   tour export -> per-condition evidence figures (3 tour stages)
     │   └── plot_bench.py     sim logs → RESEARCH.md figures
     └── runs/                 exported runs (gitignored)
 ```

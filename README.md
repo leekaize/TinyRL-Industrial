@@ -46,6 +46,9 @@ pio device monitor                          # 115200, USB-CDC
 | `p` | [pending] print stored unknown batches (label/discard by id) |
 | `f <label> [normal\|fault]` | [feedback] label current/open episode |
 | `m` | [monitor] status (step/score/theta/params/lib/pubs/qum/heap) |
+| `v` | [verbose] toggle per-transaction bus trace |
+| `d` | [decision] toggle the per-step decision trace |
+| `R` | [raw] toggle raw x,y,z streaming (vib node; 200 Hz, one line per sample - feeds `tools/feature_selection.py --capture`) |
 | `reset` | [wipe] factory reset stored state, typed in full |
 
 ### Capture a hardware session, replay it offline
@@ -56,6 +59,10 @@ Capture it, analyse it, rerun it through the real core without hardware:
 
 ```bash
 python3 tools/seriallog.py                    # capture: live view + raw .log + pandas .csv
+python3 tools/rig_tour.py                     # scripted rig tour: prompts you at each state
+                                              # change, labels every ask by itself, records
+                                              # every [WHY] decision line; --trace adds the
+                                              # per-step decision dump
 bash tests/replay.sh data/serial/<file>.log   # rerun the session in the host core
 ```
 
@@ -72,7 +79,8 @@ stateDiagram-v2
     [*] --> IDLE: fresh flash
     IDLE --> LEARN: s key or start action
     LEARN --> MON: CAL freezes ranges, FIT sets theta
-    MON --> ALARM: score above theta 5 steps in a row
+    MON --> ALARM: evidence accumulator crosses ACC_ALARM
+    (cond era); legacy z: score above theta 5 steps
     ALARM --> MON: 60 quiet steps close the episode
     ALARM --> MON: normal feedback, theta up 10 percent
     MON --> IDLE: reset command, factory reset
@@ -80,8 +88,8 @@ stateDiagram-v2
 
 The same story in words:
 
-1. **IDLE**: press `s` or publish `{"action":"start"}` to `.../Action/feedback` — with the machine STOPPED (the CAL baseline becomes the `op_stopped` condition).
-2. **LEARN, about 30 s CAL**: ranges freeze; the stopped baseline auto-registers.
+1. **IDLE**: press `s` or publish `{"action":"start"}` to `.../Action/feedback` — on a representative machine state. The CAL baseline auto-registers as the `op_stopped` condition (that slug is kept whatever state commissions the node). With the PM1125H meter in the feature set, commission on a RUNNING state: the meter sends NaN power factor at no load and the all-or-nothing poll fails, so a stopped machine cannot feed the node.
+2. **LEARN, about 30 s CAL**: ranges freeze; the baseline auto-registers.
 3. **LEARN, about 30 s theta fit**: the net trains on the live stream the whole time.
 4. **MON**: transitions are gated off (settle gate: no train/alarm/ask mid-motion); a settled anomaly raises ALARM and opens an episode; a known condition is labelled at once; `unknown` stores a pending batch and publishes an **ask** (ask loop below).
 5. **Reboot**: `model.bin` + `net.bin` + `conditions.jsonl` (+ `pending.jsonl`) restore monitoring with zero relearning. A reboot mid-learning restarts CAL.
@@ -136,8 +144,13 @@ Point the agent runtime at the broker with this sheet + `uns/`; it runs every no
 
 ## The learning core at a glance
 
+- **Enhancements over the base core**: the full inventory - mechanism,
+  prevented industrial failure, and the proving test per row - lives in
+  `ENHANCEMENTS.md`. The base learner (Stream-X recipe, StreamingOptimizer)
+  is used as-is from the submodule; the paper's claim is the wrapper.
+
 - **Learning**: one-step prediction net (4 to 32 to 32 to 4, layer-aware sparse init + LayerNorm + LeakyReLU), reward = -surprise, **StreamingOptimizer** update with eligibility traces (`nodes/core/streaming_optimizer.h`; every parameter moves < alpha per step; v2 ObGD via `-DMONITOR_USE_OBGD`). Score = z-space prediction-error EMA; alarm at theta = mu + 4 sigma.
-- **Two feature spaces**: frozen anchored-ratio condition space (centroids + per-condition match units) and TinyRL z-scores (frozen after theta fit = exact post-boot resume). Details in ARCHITECTURE.md.
+- **Two feature spaces**: frozen anchored-ratio condition space (centroids + per-condition match units) and the network's observation, era-gated: TinyRL z-scores frozen after theta fit (legacy z env), anchored-ratio levels (rel-obs A/B arm), or per-condition centered residuals `(rel - c)/u` (current cond-obs env, `MODEL_VERSION` 8, era-locked persistence). Details in ARCHITECTURE.md.
 - **Persistence (LittleFS)**: `/model.bin` v6 + `/net.bin` (Linear layers verbatim) + `/conditions.jsonl` + `/pending.jsonl`.
 - **Cost**: 1,348 params with about 16 KB optimizer state (traces + leaky max + grads); fwd+bwd+update at 1 Hz is far under 0.1% CPU at 240 MHz. PSRAM free for bigger nets.
 - **Why a streaming optimizer, not the MVP histograms**: histograms saw only consecutive bin pairs; the net learns joint one-step dynamics; the per-parameter update bound keeps anomaly bursts sane.
@@ -159,15 +172,25 @@ Legend: alpha = step size (max move per update) · delta = surprise (prediction 
 
 ### Algorithm 1: one monitor step (`tinyrl_monitor.h/.cpp`)
 
+The listing is the legacy z-era pipeline (the paper's A/B baseline). The
+cond-obs env swaps exactly two of its lines: line 2 becomes the
+per-condition centered observation `x = (rel - c_matched) / u_matched`
+(nearest condition's frame when unmatched, CAL-unit rel before the first
+condition exists), and line 7 becomes the evidence accumulator - each
+settled step adds its excess past the ACTIVE gate (the condition's own
+surprise band, and in the cond era also the positional band
+`sum((rel-c)/u)^2`), quiet leaks the accumulator and never resets it, an
+episode opens when it crosses `ACC_ALARM`.
+
 ```
 loop at poll rate (1 Hz):
  1: x <- sensor.features()                 # e.g. 4 telemetry values
- 2: standardized x from frozen moments     # Rule 1
+ 2: standardized x from frozen moments     # Rule 1 (cond era: (rel-c)/u)
  3: y = net(x_prev)                        # predict next features from current
  4: delta = mean squared z-error           # surprise = predicted vs actual
  5: update net: trace + StreamingOptimizer # Rules 2+3: one small bounded step
  6: score <- EMA(delta)                    # smoothed surprise
- 7: if score > theta: open episode         # -> Algorithm 2
+ 7: if score > theta: open episode         # -> Algorithm 2 (cond: acc)
  8: publish State/event
 ```
 
@@ -258,7 +281,7 @@ Which problem each part solves (reading pointers into the Stream-X paper):
 │   ├── persistence.h/.cpp            model.bin v4 + net.bin (weights) + conditions.jsonl
 │   ├── uns_messaging.h/.cpp          WiFi/MQTT, 4 topics, State/* + Action/feedback
 │   ├── node_runtime.h/.cpp           composition root - the real setup()/loop()
-│   ├── console.h/.cpp                serial console: s r l f m reset (+ JSON feedback)
+│   ├── console.h/.cpp                serial console: s r l f m v d R reset (+ JSON feedback)
 │   ├── json_mini.h                   tiny JSON writer for payloads
 │   └── esp_shim.c                    getentropy → esp_random (TinyRL TRNG on ESP32)
 │

@@ -68,11 +68,14 @@ An episode with `condition_id: "unknown"` is the node ASKING for a label.
 - During a node's learning phase (state=learn) do NOT send labels; wait for
   state=ok. If a node is stuck in learn > 3 min, the sensor is likely not
   fresh - check the node's console diagnostics via the operator.
-- Fresh deployment playbook (2026-11-15): commission on the STOPPED machine
-  (console 's' or `{"action":"start"}`) - the CAL baseline auto-registers as
-  the `op_stopped` normal condition; then start the machine and label each
-  new operating point / fault as its ask opens. Nodes resume from flash
-  after power cycles with no relearning.
+- Fresh deployment playbook (updated 2026-11-21): commission on a
+  REPRESENTATIVE machine state (console 's' or `{"action":"start"}`) - the
+  CAL baseline auto-registers as the `op_stopped` normal condition (slug
+  kept whatever state commissions). With the PM1125H meter in the feature
+  set, commission on a RUNNING state: PF is NaN at no load and the
+  all-or-nothing poll fails on a stopped machine. Then tour the operating
+  points / faults and label each new one as its ask opens. Nodes resume
+  from flash after power cycles with no relearning.
 
 ## Skill 4 — Cross-node orchestration & knowledge graph
 
