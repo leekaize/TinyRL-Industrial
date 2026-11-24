@@ -54,7 +54,10 @@ TINYRL = ROOT / "TinyRL"
 CORE = ROOT / "nodes" / "core"
 STATIC = BENCH / "static"
 RUNS = BENCH / "runs"
-BIN = Path("/tmp/tinyrl_interactive")
+# Per-instance binary + stamp: parallel bench sessions (the ablation runs)
+# set TINYRL_BENCH_BIN so concurrent build() calls and their flags stamps
+# never touch the same file.
+BIN = Path(os.environ.get("TINYRL_BENCH_BIN", "/tmp/tinyrl_interactive"))
 
 FEATURES = {
     "vfd_g100": [("i", "A"), ("fset", "Hz"), ("vdc", "V"), ("tq", "%")],
@@ -63,24 +66,35 @@ FEATURES = {
 }
 
 def build() -> None:
-    # NOTE: machine_model.hpp (the generator) must stay in this list - a
-    # header-only edit has to trigger a rebuild or the web bench silently
-    # runs the old machine model (2026-11-19)
+    # NOTE: the headers must stay in this list - a header-only edit has to
+    # trigger a rebuild or the web bench silently runs the old model
+    # (machine_model.hpp 2026-11-19; node_config.h 2026-11-22f - the
+    # POS_FIRE_STAND_N raise never reached the bench binary without it)
     srcs = [STUBS / "stub_impl.cpp"] \
         + [CORE / f for f in ["node_runtime.cpp", "uns_messaging.cpp",
                               "console.cpp", "tinyrl_monitor.cpp",
                               "condition_library.cpp", "episode.cpp",
                               "pending_store.cpp", "persistence.cpp"]] \
+        + sorted(CORE.glob("*.h")) \
         + [HOST / "bench_host.cpp", HOST / "machine_model.hpp"]
+    # era A/B hook: the DEPLOYED cond era is the default (2026-11-22d;
+    # user decision: the z era phases off once each enhancement is
+    # proven). TINYRL_BENCH_FLAGS="-DMONITOR_REL_OBS" benches the rel
+    # paper arm; an EMPTY value benches the legacy z era ablation arm.
+    extra = os.environ.get("TINYRL_BENCH_FLAGS",
+                           "-DMONITOR_COND_OBS").split()
+    stamp = BIN.with_suffix(".flags")
     newest = max(os.path.getmtime(p) for p in srcs)
-    if BIN.exists() and os.path.getmtime(BIN) >= newest:
+    if BIN.exists() and os.path.getmtime(BIN) >= newest \
+            and stamp.exists() and stamp.read_text() == " ".join(extra):
         return
     inc = [f"-I{STUBS}", f"-I{TINYRL}/src", f"-I{TINYRL}/examples/stream_x/src",
            f"-I{CORE}"]
-    cmd = ["g++", "-std=c++17", "-O2", "-DAG_EMBEDDED", *inc,
+    cmd = ["g++", "-std=c++17", "-O2", "-DAG_EMBEDDED", *extra, *inc,
            *[str(p) for p in srcs], "-o", str(BIN)]
     print("building", BIN, "...")
     subprocess.run(cmd, check=True)
+    stamp.write_text(" ".join(extra))
 
 
 class Bench:
@@ -113,6 +127,8 @@ class Bench:
         self.context = "op_stopped"           # setpoint the machine runs at
         self.marks = []                       # every machine event (step, name)
         self.node_types = None                # filled from META
+        self.node_feats = None                # {node: names} from META
+        self.node_units = None                # {node: units} from META
         env = dict(os.environ, TINYRL_STEPS=str(steps), TINYRL_NODES=str(nodes))
         if profile:
             env["TINYRL_PROFILE"] = profile
@@ -138,8 +154,10 @@ class Bench:
                 t = line.split()
                 row = {"node": int(t[1]), "step": int(t[2]), "phase": t[3],
                        "score": float(t[4]), "theta": float(t[5]),
-                       "ep": int(t[6]), "cond": t[7], "lib": int(t[8]),
-                       "feat": [float(v) for v in t[9:]]}
+                       "gate": float(t[6]), "ragg": float(t[7]),
+                       "gate_r": float(t[8]), "acc": float(t[9]),
+                       "ep": int(t[10]), "cond": t[11], "lib": int(t[12]),
+                       "feat": [float(v) for v in t[13:]]}
                 self.q.put(("S", row["node"], row))
             elif line.startswith("PEND "):
                 t = line.split(maxsplit=2)
@@ -224,6 +242,19 @@ class Bench:
                         x for x in t if x.startswith("steps=")).split("=")[1])
                     self.node_types = [x.split("=", 1)[1] for x in t
                                        if re.match(r"node\d+=", x)]
+                    # real-data default: the binary's profile is the truth
+                    # (a modality without a capture falls back to its
+                    # synthetic generator and its synthetic names)
+                    self.node_feats, self.node_units = {}, {}
+                    for x in t:
+                        if x.startswith("feats"):
+                            eq = x.find("=")
+                            self.node_feats[int(x[5:eq])] = \
+                                x[eq + 1:].split(",")
+                        elif x.startswith("units"):
+                            eq = x.find("=")
+                            self.node_units[int(x[5:eq])] = \
+                                x[eq + 1:].split(",")
                 elif kind == "MACHINE":
                     # "M <step> <name> <ctx>" (new) or "M <name> <ctx>" (old):
                     # the binary stamps the exact step the truth applies
@@ -238,7 +269,7 @@ class Bench:
                                     for r in rows), default=0)
                         self.machine = parts[0]
                         self.context = parts[1] if len(parts) > 1 else parts[0]
-                    self.marks.append([step, self.machine])
+                    self.marks.append([step, self.machine, self.context])
                 elif kind == "EV":
                     step = max((r["step"] for rows in self.rows for r in rows),
                                default=0)
@@ -316,16 +347,17 @@ class Bench:
             self.pump()
         RUNS.mkdir(exist_ok=True)
         ts = time.strftime("%Y%m%d-%H%M%S")
-        out = RUNS / f"run-{ts}.jsonl"
+        # parallel sessions export on distinct ports; tag the file so two
+        # same-second exports cannot overwrite each other
+        port = os.environ.get("TINYRL_BENCH_PORT", "")
+        out = RUNS / (f"run-{ts}-{port}.jsonl" if port else f"run-{ts}.jsonl")
         with self.lock:
             with open(out, "w") as f:
                 meta = {"type": "meta", "steps_total": self.steps_total,
                         "mode": self.mode,
                         "node_types": list(self.node_types or []),
-                        "feature_names": {t: [n for n, _ in FEATURES[t]]
-                                          for t in self.node_types or []},
-                        "feature_units": {t: [u for _, u in FEATURES[t]]
-                                          for t in self.node_types or []}}
+                        "feature_names": self._feat_meta("name"),
+                        "feature_units": self._feat_meta("unit")}
                 f.write(json.dumps(meta) + "\n")
                 for i, rows in enumerate(self.rows):
                     for r in rows:
@@ -333,9 +365,9 @@ class Bench:
                 for step, text in self.events:
                     f.write(json.dumps({"type": "EV", "step": step,
                                         "text": text}) + "\n")
-                for step, name in self.marks:
+                for step, name, ctx in self.marks:
                     f.write(json.dumps({"type": "MARK", "step": step,
-                                        "name": name}) + "\n")
+                                        "name": name, "ctx": ctx}) + "\n")
                 for i, ids in enumerate(self.pending):
                     f.write(json.dumps({"type": "PEND", "node": i,
                                         "ids": ids}) + "\n")
@@ -344,6 +376,19 @@ class Bench:
                         f.write(json.dumps({"type": "LIBC", "node": i,
                                             **entry}) + "\n")
         return str(out)
+
+    def _feat_meta(self, which):
+        """Per-node feature names/units for the export: the binary's META
+        when present, the static FEATURES table as the fallback."""
+        out = {}
+        live = self.node_feats if which == "name" else self.node_units
+        for i, t in enumerate(self.node_types or []):
+            if live and i in live:
+                out[t] = live[i]
+            elif t in FEATURES:
+                out[t] = [x for x, _ in FEATURES[t]] if which == "name" \
+                    else [x for _, x in FEATURES[t]]
+        return out
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -358,7 +403,12 @@ class Bench:
                 ntype = (self.node_types[i]
                          if self.node_types and i < len(self.node_types)
                          else "vfd_g100")
-                feats = FEATURES.get(ntype, [])
+                if self.node_feats and i in self.node_feats:
+                    names = self.node_feats[i]
+                    units = (self.node_units or {}).get(i, [""] * len(names))
+                    feats = list(zip(names, units))
+                else:
+                    feats = FEATURES.get(ntype, [])
                 last = rows[-1] if rows else {"step": 0, "phase": "idle",
                                               "score": 0, "theta": 0, "ep": 0,
                                               "cond": "idle", "lib": 0,

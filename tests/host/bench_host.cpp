@@ -25,8 +25,11 @@
 //   L <idx> <slug> <json>   applyFeedback(json) on node idx + sharing
 //   q                       quit
 // Per monitor step: one state line PER node:
-//   S <node> <step> <phase> <score> <theta> <ep_open> <cond> <lib> f0 ...
-// plus M <state> whenever the machine state changes. Event lines:
+//   S <node> <step> <phase> <score> <theta> <gate> <ragg> <gate_r> <acc>
+//     <ep_open> <cond> <lib> f0 ...
+// (gate/ragg/gate_r/acc = the per-cond era evidence triple + accumulator;
+// -1/-1 for gate/gate_r in the z era). plus M <state> whenever the
+// machine state changes. Event lines:
 // [RL]/[EP]/[FB]/[LIB]/[SHARE]/[MACHINE].
 // META + READY open the stream; DONE closes it.
 //
@@ -130,9 +133,11 @@ static void print_state() {
   for (int i = 0; i < n_nodes; ++i) {
     float f[8];
     rigs[i].sensor.features(f);
-    printf("S %d %ld %s %.4f %.4f %d %s %u",
+    printf("S %d %ld %s %.4f %.4f %.4f %.4f %.4f %.4f %d %s %u",
            i, rigs[i].last_step, rigs[i].app.phase(), rigs[i].app.score(),
-           rigs[i].app.theta(), rigs[i].app.episodeOpen() ? 1 : 0,
+           rigs[i].app.theta(), rigs[i].app.gate(), rigs[i].app.ragg(),
+           rigs[i].app.gateR(), rigs[i].app.acc(),
+           rigs[i].app.episodeOpen() ? 1 : 0,
            rigs[i].app.conditionId(), rigs[i].app.libSize());
     for (int k = 0; k < rigs[i].sensor.profile().n_features; ++k)
       printf(" %.5g", f[k]);
@@ -312,9 +317,9 @@ int main() {
 
   for (int i = 0; i < n_nodes; ++i) {
     const FeatureProfile* prof =
-        (n_nodes == 1 && p && strcmp(p, "vib") == 0) ? &PROF_VIB
-        : (n_nodes == 1 && p && strcmp(p, "g100") == 0) ? &PROF_G100
-        : (i % 2 == 0 ? &PROF_G100 : &PROF_VIB);
+        (n_nodes == 1 && p && strcmp(p, "vib") == 0) ? mm_prof_vib()
+        : (n_nodes == 1 && p && strcmp(p, "g100") == 0) ? mm_prof_g100()
+        : (i % 2 == 0 ? mm_prof_g100() : mm_prof_vib());
     rigs[i].sensor.setProfile(prof);
     rigs[i].sensor.setSeed(12345u + 7919u * (unsigned)i);
     NodeIdentity id{};
@@ -332,11 +337,27 @@ int main() {
   }
 
   printf("META nodes=%d steps=%ld", n_nodes, total);
-  for (int i = 0; i < n_nodes; ++i)
-    printf(" node%d=%s nf=%d", i,
-           rigs[i].sensor.profile().node_type,
-           rigs[i].sensor.profile().n_features);
-  printf("\nREADY\n");
+  for (int i = 0; i < n_nodes; ++i) {
+    const FeatureProfile& pr = rigs[i].sensor.profile();
+    printf(" node%d=%s nf=%d", i, pr.node_type, pr.n_features);
+    // the REAL profile's names travel with META: the harness-side
+    // FEATURES table holds the synthetic sets and cannot know which
+    // modality fell back (2026-11-22c real-data default)
+    printf(" feats%d=", i);
+    for (int f = 0; f < pr.n_features; ++f)
+      printf("%s%s", f ? "," : "", pr.features[f].name);
+    printf(" units%d=", i);
+    for (int f = 0; f < pr.n_features; ++f)
+      printf("%s%s", f ? "," : "", pr.features[f].unit);
+  }
+  printf("\n");
+  if (mm_real_on())
+    printf("REALMODE on (default): nodes stream the MODBUS collect"
+           " campaign; a modality without a trusted capture falls back to"
+           " its synthetic generator (g100 CSV, vib CSV or"
+           " TINYRL_VIB_SYNTH=1); TINYRL_SYNTH=1 forces synthetic"
+           " everywhere\n");
+  printf("READY\n");
   printf("M 0 %s %s\n", truth_name(), truth_ctx());   // boot truth: NOT running
 
   char line[256];

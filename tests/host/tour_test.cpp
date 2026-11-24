@@ -133,8 +133,14 @@ uint32_t wait_ask_and_label(Rig& r, const char* slug, const char* kind,
 void ask_label_all(const char* slug, const char* kind, long cap) {
   int p0 = (int)rigs[0].app.pendingSize();
   int p1 = (int)rigs[1].app.pendingSize();
-  wait_ask_and_label(rigs[0], slug, kind, p0, cap);
-  wait_ask_and_label(rigs[1], slug, kind, p1, cap);
+  // A node streaming REAL data without this condition's recording holds
+  // its previous block and cannot ask - skip its wait. A node on its
+  // SYNTHETIC fallback (its modality's recordings are missing entirely)
+  // behaves synthetically and asks normally.
+  if (!(mm_real_on() && mm_g100_ok) || mm_has_block(true, slug))
+    wait_ask_and_label(rigs[0], slug, kind, p0, cap);
+  if (!(mm_real_on() && mm_vib_ok) || mm_has_block(false, slug))
+    wait_ask_and_label(rigs[1], slug, kind, p1, cap);
 }
 
 bool cond_becomes(Rig& r, const char* slug, long cap) {
@@ -163,16 +169,23 @@ int alarms_in_window(Rig& r, long from_step) {
 
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);
-  printf("TOURCHECK: two-node seven-condition tour (learn + re-tour)\n");
+  const bool REAL = mm_real_on();
+  printf("TOURCHECK: two-node seven-condition tour (learn + re-tour)%s\n",
+         REAL ? " [REAL DATA]" : " [SYNTHETIC]");
 
-  rigs[0].sensor.setProfile(&PROF_G100);
+  rigs[0].sensor.setProfile(mm_prof_g100());
   rigs[0].sensor.setSeed(12345);
-  rigs[1].sensor.setProfile(&PROF_VIB);
+  rigs[1].sensor.setProfile(mm_prof_vib());
   rigs[1].sensor.setSeed(777);
   for (Rig& r : rigs) r.sensor.setQuietLog(true);   // no [SIM] flood in CI
-  NodeIdentity id{"tour-01", "v1/Plant01/Area/Line/Station-01",
-                  "ssid", "pass", "127.0.0.1", 1883};
-  for (Rig& r : rigs) r.app.begin(r.sensor, id);
+  const char* dev_ids[2] = {"tour-01", "tour-02"};  // distinct: the monitor
+                                                    // tags every [WHY]/[RL]
+                                                    // print with its dev id
+  for (int i = 0; i < 2; ++i) {
+    NodeIdentity id{dev_ids[i], "v1/Plant01/Area/Line/Station-01",
+                    "ssid", "pass", "127.0.0.1", 1883};
+    rigs[i].app.begin(rigs[i].sensor, id);
+  }
 
   // ---- phase 0: commission on the STOPPED machine (user procedure) ----
   for (Rig& r : rigs) r.app.startLearning();
@@ -185,9 +198,16 @@ int main() {
   printf("  commissioned: baseline op_stopped on both nodes\n");
 
   // ---- learn tour ------------------------------------------------------
+  // Learn-stage settle windows: the research budget is 60-300 settled
+  // samples per new condition (2026-11-21 user decision). REAL recordings
+  // need the upper end: the machine drifts inside a 150-row block, the
+  // first-formed bands go stale, and the pinned-alarm re-form
+  // (BAND_REFORM_N) + band re-maturity need ~130 of those steps before the
+  // stage closes quiet. Synthetic fixtures are stationary: 80 suffices.
+  const long LEARN_SETTLE = REAL ? 320 : 80;
   machine(true, 0, FK_NONE);           // START at speed_1
   ask_label_all("speed_1", "normal", 250);
-  run_all(80);                         // train + clear
+  run_all(LEARN_SETTLE);               // train + clear + band re-form
   for (Rig& r : rigs) {
     assert(strcmp(r.app.phase(), "mon") == 0);
     assert(strcmp(r.app.conditionId(), "speed_1") == 0);
@@ -196,7 +216,7 @@ int main() {
 
   machine(true, 1, FK_NONE);           // SPEED2
   ask_label_all("speed_2", "normal", 250);
-  run_all(80);
+  run_all(LEARN_SETTLE);
   for (Rig& r : rigs) {
     assert(strcmp(r.app.phase(), "mon") == 0);
     assert(strcmp(r.app.conditionId(), "speed_2") == 0);
@@ -223,14 +243,22 @@ int main() {
   assert(strcmp(rigs[1].app.conditionId(), "speed_1_imbalance") == 0);
   printf("  speed_1_imbalance learned (vib); g100 quiet inside its noise\n");
 
+  machine(true, 1, FK_IMB);            // imbalance at speed_2 (running)
+  wait_ask_and_label(rigs[1], "speed_2_imbalance", "fault", 0, 250);
+  run_all(300);
+  assert(rigs[0].app.pendingSize() == 0);      // g100 blind to imbalance
+  assert(strcmp(rigs[0].app.phase(), "mon") == 0);
+  assert(strcmp(rigs[1].app.conditionId(), "speed_2_imbalance") == 0);
+  printf("  speed_2_imbalance learned (vib); g100 quiet inside its noise\n");
+
   machine(true, 0, FK_PHASE);          // phase_loss at speed_1
   ask_label_all("speed_1_phase_loss", "fault", 250);
-  run_all(80);
+  run_all(LEARN_SETTLE);
   printf("  speed_1_phase_loss learned on both nodes\n");
 
   machine(true, 1, FK_PHASE);          // speed_2 under phase_loss
   ask_label_all("speed_2_phase_loss", "fault", 250);
-  run_all(80);
+  run_all(LEARN_SETTLE);
   printf("  speed_2_phase_loss learned on both nodes\n");
 
   t0 = rigs[0].sensor.polls();
@@ -266,6 +294,14 @@ int main() {
   assert(rigs[1].app.pendingSize() == 0);
   printf("  re-tour imbalance recognised by owner (vib) only\n");
 
+  machine(true, 1, FK_IMB);            // imbalance at speed_2
+  assert(cond_becomes(rigs[1], "speed_2_imbalance", 150));
+  run_all(40);
+  assert(strcmp(rigs[0].app.conditionId(), "speed_2") == 0); // g100 blind
+  assert(rigs[0].app.pendingSize() == 0);
+  assert(rigs[1].app.pendingSize() == 0);
+  printf("  re-tour speed_2_imbalance recognised by owner (vib) only\n");
+
   machine(true, 1, FK_PHASE);          // phase_loss at speed_2
   assert(cond_becomes(rigs[0], "speed_2_phase_loss", 150));
   assert(cond_becomes(rigs[1], "speed_2_phase_loss", 150));
@@ -296,6 +332,7 @@ int main() {
       {true, 0, FK_NONE},             // speed_1
       {true, 1, FK_NONE},             // speed_2
       {true, 0, FK_IMB},              // imbalance@speed_1 (vib owns)
+      {true, 1, FK_IMB},              // imbalance@speed_2 (vib owns)
       {true, 1, FK_PHASE},            // phase_loss@speed_2 (both see)
       {false, 1, FK_NONE},            // stop, faults removed
     };
@@ -325,6 +362,8 @@ int main() {
   assert(cond_becomes(rigs[1], "speed_2", 150));
   machine(true, 0, FK_IMB);
   assert(cond_becomes(rigs[1], "speed_1_imbalance", 150));
+  machine(true, 1, FK_IMB);
+  assert(cond_becomes(rigs[1], "speed_2_imbalance", 150));
   machine(true, 1, FK_PHASE);
   assert(cond_becomes(rigs[0], "speed_2_phase_loss", 150));
   assert(cond_becomes(rigs[1], "speed_2_phase_loss", 150));
@@ -344,16 +383,20 @@ int main() {
     assert(r.saw_unidentified);
   }
   assert(rigs[0].asks == 4);           // speed_1, speed_2, 2x phase_loss
-  assert(rigs[1].asks == 5);           // + imbalance (the vib sees it)
+                                       // (real mode: the collect dataset
+                                       // covers all 4; imbalance aliases
+                                       // the speed blocks, user decision)
+  assert(rigs[1].asks == 6);           // + both imbalances (the vib sees
+                                       // them: 14 real rows each)
   // A5: final vocabulary (each node's own centroids)
   assert(rigs[0].app.libSize() == 5);
   for (const char* s : {"op_stopped", "speed_1", "speed_2",
                         "speed_1_phase_loss", "speed_2_phase_loss"})
     assert(lib_has(rigs[0], s));
-  assert(rigs[1].app.libSize() == 6);
+  assert(rigs[1].app.libSize() == 7);
   for (const char* s : {"op_stopped", "speed_1", "speed_2",
-                        "speed_1_imbalance", "speed_1_phase_loss",
-                        "speed_2_phase_loss"})
+                        "speed_1_imbalance", "speed_2_imbalance",
+                        "speed_1_phase_loss", "speed_2_phase_loss"})
     assert(lib_has(rigs[1], s));
 
   printf("\nTOURCHECK OK: asks mature at %d+, owner-only asks, re-tour "

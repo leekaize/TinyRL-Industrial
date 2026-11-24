@@ -73,7 +73,7 @@ def fig_detection(rows, outdir):
     # latency decomposition (node_config.h): the alarm credit runs only on
     # settled steps, so the figure must show WHERE the 5 settled steps
     # start after the 8-step settle dwell
-    settled_at = onset + 8   # SETTLE_CALM_N: worst case after a step change
+    settled_at = onset + 8   # SETTLE_WINDOW_N: worst case after a step change
 
     fig, ax = plt.subplots(figsize=(8.2, 3.6), dpi=150)
     ax.axvspan(quiet[0]["step"], onset, color=GREEN, alpha=0.07, label="quiet")

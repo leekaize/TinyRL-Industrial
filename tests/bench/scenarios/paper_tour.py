@@ -51,6 +51,13 @@ def truth_slug(machine, context):
 LEARN_TOUR = [
     ("cmd", "learn"),
     ("wait_mon", None),
+    # Stage-6's commissioning budget (run_all(500) = cal 30 + fit 30 +
+    # ~440 settled stopped steps): the per-condition units tighten on the
+    # streamed rows, so a foreign state leaves MATCH_Q at its ONSET (the
+    # vib's b2 d=13.36 at speed_1) and asks - instead of diluting into the
+    # fresh op_stopped radius and holding forever (the 2026-11-22f finding:
+    # without this the vib never learned speed_1 in the paper tour).
+    ("settle", 440),
     ("machine", "START"),
     ("unknown", "speed_1"),
     ("machine", "SPEED2"),
@@ -61,6 +68,12 @@ LEARN_TOUR = [
     ("machine", "SPEED1"),
     ("machine", "START"),
     ("unknown", "speed_1_imbalance"),
+    ("machine", "STOP"),
+    ("machine", "NORMAL"),
+    ("machine", "IMBALANCE"),
+    ("machine", "SPEED2"),
+    ("machine", "START"),
+    ("unknown", "speed_2_imbalance"),
     ("machine", "STOP"),
     ("machine", "NORMAL"),
     ("machine", "PHASE_LOSS"),
@@ -84,6 +97,12 @@ RETOUR = [
     ("machine", "SPEED1"),
     ("machine", "START"),
     ("known", "speed_1_imbalance"),
+    ("machine", "STOP"),
+    ("machine", "NORMAL"),
+    ("machine", "IMBALANCE"),
+    ("machine", "SPEED2"),
+    ("machine", "START"),
+    ("known", "speed_2_imbalance"),
     ("machine", "STOP"),
     ("machine", "NORMAL"),
     ("machine", "PHASE_LOSS"),
@@ -157,9 +176,11 @@ def run_tour(c: Client, args):
     retour_asks = 0
     learned = 0
     node_type = {}
+    dwell = args.dwell
     t0 = time.time()
+    wall = 600 + dwell * 12      # the learn stages each hold >= dwell steps
 
-    while stage < len(tour) and time.time() - t0 < 600:
+    while stage < len(tour) and time.time() - t0 < wall:
         st = c.get("/state")
         flow(c, st)
         for n in st["nodes"]:
@@ -174,7 +195,7 @@ def run_tour(c: Client, args):
         # state is named at its own 'unknown' stage. NOTE: since the
         # 2026-11-19 generator change, faults installed while stopped
         # measure exactly as stopped, so no ask can fire before START.
-        if kind in ("cmd", "wait_mon", "machine") and st["ask"]:
+        if kind in ("cmd", "wait_mon", "machine", "settle") and st["ask"]:
             c.post("/control", {"cmd": "continue"})
 
         if kind == "cmd":
@@ -193,6 +214,11 @@ def run_tour(c: Client, args):
                 issued = True
                 print(f"  [{stage}] machine {arg}")
             due = max_step(st) - stage_step >= SETTLE
+        elif kind == "settle":
+            due = max_step(st) - stage_step >= arg
+            if due:
+                print(f"  [{stage}] commissioning settle done "
+                      f"({arg} settled stopped steps)")
         elif kind == "unknown":
             if mode == "two-way":
                 if not asked_seen:
@@ -212,9 +238,14 @@ def run_tour(c: Client, args):
                         if sent:
                             print(f"  [{stage}] labeled {sent} batch(es) "
                                   f"as {arg}")
+                    # the stage holds >= DWELL steps after the switch so
+                    # EVERY node gets its latency budget (sticky release
+                    # 80 + alarm + ask batch 15): the first node to ask
+                    # must not close the stage under the slower one
+                    # (2026-11-22c VFD finding, --dwell sweep)
                     due = not st["ask"] and pendings(st) == 0 \
                         and not maturing(st) \
-                        and max_step(st) - stage_step >= 12
+                        and max_step(st) - stage_step >= dwell
             else:
                 due = max_step(st) - stage_step >= DWELL
                 if due:
@@ -252,7 +283,7 @@ def run_tour(c: Client, args):
             asked_seen = False
             stage_until = time.time() + 60
         elif time.time() - t0 > 0 and max_step(st) - stage_step > 60 \
-                and kind != "unknown":
+                and kind not in ("unknown", "settle"):
             # safety valve: never wedge the tour on one stage
             print(f"  [{stage}] stage forced on ({kind} {arg})")
             stage += 1
@@ -279,11 +310,19 @@ def main() -> None:
     ap.add_argument("--nodes", type=int, default=2)
     ap.add_argument("--steps", type=int, default=2400)
     ap.add_argument("--port", type=int, default=8791)
+    ap.add_argument("--profile", choices=["g100", "vib"], default=None,
+                    help="single-node profile override (with --nodes 1); "
+                         "used to measure per-node flash state exactly")
+    ap.add_argument("--dwell", type=int, default=12,
+                    help="min sim steps each learn stage stays open after "
+                         "the switch (the per-node latency budget: sticky "
+                         "release 80 + alarm + ask batch 15)")
     args = ap.parse_args()
 
     server = subprocess.Popen(
         [sys.executable, str(SERVER), "--nodes", str(args.nodes), "--steps",
-         str(args.steps), "--port", str(args.port), "--mode", args.mode],
+         str(args.steps), "--port", str(args.port), "--mode", args.mode]
+        + (["--profile", args.profile] if args.profile else []),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     c = Client(args.port)
     try:

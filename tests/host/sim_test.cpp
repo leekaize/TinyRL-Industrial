@@ -242,6 +242,209 @@ int main() {
     plast::audit(mon, zr, rawWin, 4, t);           // final default-path snapshot
   }
 
+  // ---- H: per-condition detection trace (the A/B headline) -------------
+  // The architecture is no longer ONE shared score vs ONE global theta: a
+  // matched state gates on its OWN matured surprise band (scoreTheta), an
+  // unknown state on the global fit theta. One monitor exercises the split
+  // end to end:
+  //   load_a labeled -> quiet under its band
+  //   shift to load_b  -> unknown -> alarm -> labeled -> net learns -> quiet
+  //   back to load_a   -> recurrence, quiet
+  //   in-radius fault  -> 2.5 band-sigmas on EVERY feature at once: inside
+  //                      each per-feature match radius (max-component test,
+  //                      so the prototype layer calls it quiet) but far off
+  //                      the condition's training manifold. Era verdicts:
+  //                      z era misses (clamped point + trained shared point),
+  //                      rel era misses (level-space interpolation across
+  //                      the two trained regimes), cond-obs era catches
+  //                      (residuals: the fault is 2.5 sigma off EVERY
+  //                      condition's manifold centre).
+  // The fault point is built EXACTLY from the centroid + offsets (no
+  // fixture jitter) so the max-component distances are deterministic.
+  {
+    TinyRLConditionMonitor m3;
+    m3.begin(PROF);
+    m3.startLearning();
+    ConditionLibrary lib3;
+    lib3.begin(4);
+    m3.attachLibrary(&lib3);
+    float xh[4];
+    TinyRLConditionMonitor::StepOut oh;
+
+    long th = 0;
+    for (; th < cfg::CAL_STEPS + cfg::FIT_STEPS; ++th) {
+      sample(xh, th, false); m3.step(xh, oh);
+    }
+    assert(m3.thetaReady());
+
+    auto relWin = [&](float* m, float* s, const float* off) {
+      float acc[4] = {}, acc2[4] = {};
+      for (int k = 0; k < 16; ++k, ++th) {
+        sample(xh, th, false);
+        for (int f = 0; f < 4; ++f) xh[f] += off[f];
+        m3.step(xh, oh);
+        for (int f = 0; f < 4; ++f) {
+          float r = m3.space().rel(f, xh[f]);
+          acc[f] += r; acc2[f] += r * r;
+        }
+      }
+      for (int f = 0; f < 4; ++f) {
+        m[f] = acc[f] / 16.0f;
+        float var = acc2[f] / 16.0f - m[f] * m[f];
+        s[f] = var > 1e-12f ? sqrtf(var) : 0.0f;
+      }
+    };
+    auto htrace = [&](const char* tag) {
+      if (!trace) return;
+      int bm = (oh.matched >= 0 && lib3.at(oh.matched).s_n >= cfg::PERCOND_MIN_N);
+      printf("HTRACE step=%ld tag=%s score=%.6f theta=%.6f km=%d gate=%.6f "
+             "al=%d bm=%d ragg=%.4f grate=%.4f acc=%.4f\n",
+             (long)m3.steps(), tag, m3.score(), m3.theta(), oh.matched,
+             oh.gate, m3.alarmed() ? 1 : 0, bm, oh.ragg, oh.gate_r, oh.acc);
+    };
+
+    // Learning-budget windows. Research constraint (2026-11-21): a new
+    // condition gets 60-300 samples on the real rig, so the cond era must
+    // arm its gates within 300 settled samples. The rel/z eras keep the
+    // windows their documented bench numbers were measured at.
+#if defined(MONITOR_COND_OBS)
+    const int LEARN_B = 300;    // new-condition budget (upper bound; the
+                                // 60-step lower bound was validated
+                                // separately, 2026-11-21)
+    const int HEAL_A = 300;     // re-entry heal, same budget
+#else
+    const int LEARN_B = 4000;
+    const int HEAL_A = 8000;
+#endif
+
+    const float OFF0[4] = {0, 0, 0, 0};
+    float ma[4], sa[4];
+    relWin(ma, sa, OFF0);
+    int ia = lib3.label("load_a", ma, sa, "bench", COND_NORMAL);
+    assert(ia == 0);
+
+    bool a_false = false;
+    for (int k = 0; k < 300; ++k, ++th) {
+      sample(xh, th, false); m3.step(xh, oh); htrace("load_a");
+      if (oh.alarm_open) a_false = true;
+    }
+    assert(!a_false && !m3.alarmed());     // quiet under its own band
+
+    const float OFF_B[4] = {0.4f, 0.15f, 0.0f, 4.0f};
+    bool b_alarmed = false; int b_at = -1;
+    for (int k = 0; k < 60; ++k, ++th) {
+      sample(xh, th, false);
+      for (int f = 0; f < 4; ++f) xh[f] += OFF_B[f];
+      m3.step(xh, oh); htrace("shift_b");
+      if (oh.alarm_open && b_at < 0) { b_alarmed = true; b_at = k; }
+    }
+    assert(b_alarmed);                     // unknown regime alarms (both eras)
+
+    float mb[4], sb[4];
+    relWin(mb, sb, OFF_B);
+    int ib = lib3.label("load_b", mb, sb, "bench", COND_NORMAL);
+
+    bool b_refire = false;
+    for (int k = 0; k < LEARN_B; ++k, ++th) {
+      sample(xh, th, false);
+      for (int f = 0; f < 4; ++f) xh[f] += OFF_B[f];
+      m3.step(xh, oh); htrace("load_b");
+      if (oh.alarm_open) b_refire = true;
+    }
+    printf("H: load_b: end score %.4g theta %.4g re-fires %d, band s_n=%u "
+           "gate=%.4g pos r_n=%u gate_r=%.4g (learn window %d)\n",
+           m3.score(), m3.theta(), b_refire, (unsigned)lib3.at(ib).s_n,
+           lib3.scoreTheta(ib, m3.theta()), (unsigned)lib3.at(ib).r_n,
+           lib3.posTheta(ib), LEARN_B);
+    assert(!m3.alarmed());                 // quiet by name, then by band
+#if defined(MONITOR_REL_OBS) || defined(MONITOR_COND_OBS)
+    assert(lib3.at(ib).s_n >= cfg::PERCOND_MIN_N);   // grace expired into score gating
+#endif
+
+    // back to load_a: re-entry after training on load_b. Cross-regime
+    // interference may lift the score above band A briefly - the
+    // plasticity-stability tradeoff, measured here. Full-rate re-learning
+    // must self-heal within the window.
+    bool back_refire = false;
+    for (int k = 0; k < HEAL_A; ++k, ++th) {
+      sample(xh, th, false); m3.step(xh, oh); htrace("back_a");
+      if (oh.alarm_open) back_refire = true;
+    }
+    assert(!m3.alarmed());                 // healed (all eras)
+    printf("H: back-to-load_a refire=%d (z era: 0 by latch; rel/cond eras: "
+           "interference transient, self-healed by RELEARN_FRAC re-learning)\n",
+           back_refire);
+
+#if defined(MONITOR_COND_OBS)
+    // third-condition tripwire: with TWO regimes named, an unknown state
+    // must still alarm via nearest-condition centering - its residual is
+    // >= 3 units off the closest regime by definition of a match failure,
+    // far off the trained manifold. This is the cond era's unknown-state
+    // evidence path end to end (and it must keep working as the library
+    // grows). vdc carries no offset, mirroring OFF_B, so the point is a
+    // genuine operating point and not a sensor dropout.
+    const float OFF_C[4] = {0.8f, 0.3f, 0.0f, 8.0f};
+    bool c_alarmed = false;
+    for (int k = 0; k < 60; ++k, ++th) {
+      sample(xh, th, false);
+      for (int f = 0; f < 4; ++f) xh[f] += OFF_C[f];
+      m3.step(xh, oh); htrace("shift_c");
+      if (oh.alarm_open) c_alarmed = true;
+    }
+    assert(c_alarmed);
+    printf("H: load_c unknown-state tripwire (nearest-of-two centering): "
+           "alarmed yes\n");
+    // 120 quiet load_a steps clear the tripwire alarm so the fault phase
+    // below starts from a closed alarm (alarm_open must be able to fire).
+    for (int k = 0; k < 120; ++k, ++th) {
+      sample(xh, th, false); m3.step(xh, oh); htrace("clear_c");
+    }
+    assert(!m3.alarmed());
+#endif
+
+    // in-radius fault: 2.5 band-sigmas on every feature, EXACTLY at
+    // centroid + offset (no jitter -> deterministic max-component test)
+    float drel[4];
+    for (int f = 0; f < 4; ++f) {
+      float u = lib3.at(ia).u[f] > 0 ? lib3.at(ia).u[f] : m3.space().unit(f);
+      drel[f] = 2.5f * u;
+    }
+#if defined(MONITOR_REL_OBS) || defined(MONITOR_COND_OBS)
+    assert(lib3.at(ia).s_n >= cfg::PERCOND_MIN_N);   // the band rules the gate
+#endif
+    int fault_at = -1;
+    for (int k = 0; k < 120; ++k, ++th) {
+      sample(xh, th, false);
+      for (int f = 0; f < 4; ++f) {
+        float A = m3.space().anchor(f), mu = m3.space().mu(f);
+        float rl = lib3.at(ia).c[f] + drel[f];       // exact fault position
+        xh[f] = (mu + A) * powf(2.0f, rl) - A;
+      }
+      m3.step(xh, oh); htrace("fault");
+      if (oh.alarm_open && fault_at < 0) fault_at = k;
+    }
+#if defined(MONITOR_COND_OBS)
+    assert(fault_at >= 0);                 // residuals: off-manifold -> surprise
+    printf("PERCOND-ERA: cond-obs era CATCHES the in-radius fault "
+           "(alarm %d steps after onset; match radius says quiet, "
+           "positional band says fault)\n", fault_at);
+#elif defined(MONITOR_REL_OBS)
+    // Documented ablation result (2026-11-21): rel LEVELS interpolate
+    // across the two trained regimes, so a static fault BETWEEN them is
+    // predicted straight through (the score decays into the band; trace:
+    // 0.0038 -> 0.0004). The cond-obs build above is the fix; this miss
+    // is the paper's why for the representation change.
+    assert(fault_at < 0);
+    printf("PERCOND-ERA: rel era MISSES the in-radius fault "
+           "(level-space interpolation across the trained regimes)\n");
+#else
+    assert(fault_at < 0);                  // positional latch: structurally missed
+    printf("PERCOND-ERA: z era MISSES the in-radius fault "
+           "(positional quiet) - the A/B contrast\n");
+#endif
+    printf("H: per-condition trace stage done\n");
+  }
+
   // ---- G: per-step compute timing (host proxy for the MCU budget) ------
   // The monitor step is the whole per-second workload on the node (forward
   // + bounded update + score EMA + gates). Host timing is an x86 proxy,

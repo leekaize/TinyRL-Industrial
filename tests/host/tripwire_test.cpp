@@ -158,9 +158,14 @@ int main() {
   assert(ph1.find("quiet-unmatched=") == std::string::npos);
   // phase 2 (2026-11-15 policy): the unknown regime never trains, never
   // adapts, never clears - it stays alarmed until named. The tripwire
-  // stays silent: an alarmed plateau is not quiet-unmatched.
+  // stays silent: an alarmed plateau is not quiet-unmatched. The
+  // regime-entry grace (node_config.h REENTRY_GRACE_N, 2026-11-22) holds
+  // the alarm while the net re-adapts after the switch, so quiet-unmatched
+  // is legitimate ONLY before the phase's first alarm.
+  const size_t a2 = ph2.find("[RL] ALARM");
+  assert(a2 != std::string::npos);       // the unknown regime alarms
+  assert(ph2.find("quiet-unmatched=", a2) == std::string::npos);
   assert(ph2.find("[RL] clear") == std::string::npos);
-  assert(ph2.find("quiet-unmatched=") == std::string::npos);
 
   fprintf(stderr, "TRIPCHECK OK: labeled regime trains+clears, unknown "
                   "regime alarms and stays alarmed until named\n");

@@ -91,7 +91,7 @@ def load(path):
             elif t == "EV":
                 events.append((d["step"], d["text"]))
             elif t == "MARK":
-                marks.append((d["step"], d["name"]))
+                marks.append((d["step"], d["name"], d.get("ctx", "")))
             elif t == "PEND":
                 pend.append(d)
             elif t == "LIBC":
@@ -134,7 +134,7 @@ def main() -> None:
 
     # machine-truth segments from the MARK timeline
     mark_spans = []
-    for i, (s, name) in enumerate(marks):
+    for i, (s, name, _ctx) in enumerate(marks):
         end = marks[i + 1][0] if i + 1 < len(marks) else 10 ** 9
         mark_spans.append((name, s, end))
 
@@ -244,7 +244,7 @@ def main() -> None:
             ax_s.axvspan(a, b, color=ALARM, alpha=0.22)
         for a, b in known_spans:
             ax_s.axvspan(a, max(b, a + 1), color="#2ec4b6", alpha=0.10)
-        for step, name in marks:
+        for step, name, _ctx in marks:
             if name in ("imbalance", "phase_loss"):
                 ax_s.axvline(step, color="#d62728", ls=":", lw=1.0)
         th = [r["theta"] if r["theta"] > 0 else math.nan for r in rows]

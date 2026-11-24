@@ -12,6 +12,7 @@
 #include <utility>
 
 #define SERIAL_8N1 0x800001c
+#define SERIAL_8E1 0x800001e
 #define OUTPUT 1
 #define LOW 0
 #define HIGH 1

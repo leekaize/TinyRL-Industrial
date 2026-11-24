@@ -19,6 +19,7 @@ public:
   void begin(const char*, const char*) {}
   void reconnect() {}
   int status() { return WL_CONNECTED; }
+  int RSSI() { return -60; }   // host dummy; real value on hardware
 };
 extern WiFiClass WiFi;
 
