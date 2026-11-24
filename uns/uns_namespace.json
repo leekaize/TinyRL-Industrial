@@ -20,16 +20,78 @@
       "uns_base": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01",
       "hardware": "ESP32-S3 N8R8 + MAX485 -> LSIS LSLV-G100",
       "features": [
-        { "name": "i",    "unit": "A",  "description": "RMS output current" },
-        { "name": "slip", "unit": "Hz", "description": "|f_ref - f_out|" },
-        { "name": "vdc",  "unit": "V",  "description": "DC bus voltage" },
-        { "name": "tq",   "unit": "%",  "description": "|torque| of rated" }
+        {
+          "name": "i",
+          "unit": "A",
+          "description": "RMS output current"
+        },
+        {
+          "name": "slip",
+          "unit": "Hz",
+          "description": "|f_ref - f_out|"
+        },
+        {
+          "name": "vdc",
+          "unit": "V",
+          "description": "DC bus voltage"
+        },
+        {
+          "name": "tq",
+          "unit": "%",
+          "description": "|torque| of rated"
+        }
       ],
       "topics": {
         "state_condition": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/condition",
-        "state_event":     "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/event",
+        "state_event": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/event",
         "state_node_info": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/node_info",
-        "action_feedback": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/Action/feedback"
+        "action_feedback": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/Action/feedback",
+        "state_keepalive": "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01/State/keepalive"
+      }
+    },
+    {
+      "dev_id": "vib-01",
+      "node_type": "vib_adxl",
+      "uns_base": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01",
+      "hardware": "ESP32-S3 N8R8 + ADXL345 (SPI)",
+      "features": [
+        {
+          "name": "rms",
+          "unit": "g",
+          "description": "vibration RMS, DC-blocked"
+        },
+        {
+          "name": "b1",
+          "unit": "g2",
+          "description": "band power 1.6-7.8 Hz"
+        },
+        {
+          "name": "b2",
+          "unit": "g2",
+          "description": "band power 9.4-23.4 Hz"
+        },
+        {
+          "name": "b3",
+          "unit": "g2",
+          "description": "band power 25-54.7 Hz"
+        },
+        {
+          "name": "b4",
+          "unit": "g2",
+          "description": "band power 56.3-98.4 Hz"
+        },
+        {
+          "name": "fmax",
+          "unit": "Hz",
+          "description": "dominant FFT bin frequency"
+        }
+      ],
+      "topics": {
+        "state_condition": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01/State/condition",
+        "state_event": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01/State/event",
+        "state_node_info": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01/State/node_info",
+        "action_feedback": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01/Action/feedback",
+        "state_keepalive": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01/State/keepalive"
       }
     }
   ]

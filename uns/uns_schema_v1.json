@@ -41,6 +41,18 @@
         "fw":        { "type": "string" }
       }
     },
+    "State/keepalive": {
+      "retained": false,
+      "cadence": "every 10 s + on (re)connect - liveness beat",
+      "payload": {
+        "uptime_s":  { "type": "int", "desc": "device uptime in seconds" },
+        "rssi":      { "type": "int", "desc": "WiFi RSSI dBm" },
+        "free_heap": { "type": "int", "desc": "free heap bytes" },
+        "pubs":      { "type": "int", "desc": "total MQTT publishes since boot" },
+        "ts_ms":     { "type": "int", "desc": "device millis()" }
+      },
+      "offline_rule": "no beat for 30 s (3 missed beats) -> node OFFLINE for dashboards"
+    },
     "Action/feedback": {
       "retained": false,
       "direction": "central -> node, QoS1, the ONLY input channel",
