@@ -59,12 +59,22 @@ void UnsMessaging::maintain() {
 
 bool UnsMessaging::publishCondition(const char* state, const char* cond_id,
                                     float conf, uint32_t episode_s,
-                                    bool retained) {
+                                    bool retained, const char* batch) {
   char j[224];
-  int n = snprintf(j, sizeof(j),
-    "{\"state\":\"%s\",\"condition_id\":\"%s\",\"confidence\":%.2f,"
-    "\"episode_s\":%lu,\"ts_ms\":%lu}",
-    state, cond_id, conf, (unsigned long)episode_s, (unsigned long)millis());
+  int n;
+  if (batch && batch[0]) {
+    // the ask's answer-address: label/discard by this id
+    n = snprintf(j, sizeof(j),
+      "{\"state\":\"%s\",\"condition_id\":\"%s\",\"confidence\":%.2f,"
+      "\"episode_s\":%lu,\"batch\":\"%s\",\"ts_ms\":%lu}",
+      state, cond_id, conf, (unsigned long)episode_s, batch,
+      (unsigned long)millis());
+  } else {
+    n = snprintf(j, sizeof(j),
+      "{\"state\":\"%s\",\"condition_id\":\"%s\",\"confidence\":%.2f,"
+      "\"episode_s\":%lu,\"ts_ms\":%lu}",
+      state, cond_id, conf, (unsigned long)episode_s, (unsigned long)millis());
+  }
   bool ok = n > 0 && mqtt_.publish(t_cond_, j, retained);
   if (ok) pub_count_++;
   return ok;

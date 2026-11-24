@@ -35,8 +35,8 @@ static const char* MQTT_HOST = "192.168.201.99";   // broker IP
 static constexpr uint16_t MQTT_PORT = 1883;
 static const char* DEV_ID  = "vib-01";             // MQTT client id
 
-// UNS base path - must match uns/uns_namespace.json (rename in BOTH).
-#define UNS_BASE  "v1/Plant01/Motor-Test-Area/Line1/Vibration-Stand-01"
+// UNS base path - must match uns/uns.json (rename in BOTH).
+#define UNS_BASE  "v1/Plant01/Motor-Test-Area/Line1/Vibration-Node-01"
 // ----------------------------------------------------------------------
 
 static VibrationSensor sensor;

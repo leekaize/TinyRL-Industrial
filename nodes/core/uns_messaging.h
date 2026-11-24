@@ -1,22 +1,25 @@
 // =====================================================================
 // uns_messaging.h -- the node's ONLY contact with the outside world.
 //
-// Semantic contract (schema uns-v1.1, see uns/uns_schema_v1.json):
+// Semantic contract (schema uns-v1.1, see uns/uns.json):
 //   State/condition  retained, on change:
 //     {"state","condition_id","confidence","episode_s","ts_ms"}
+//     +"batch":"Pxxxx" ONLY while an ask is live (its stored batch id)
 //   State/event      per episode transition, not retained:
 //     {"event","condition_id","severity","duration_s","summary",
 //      "meas":{<feature>:<value>,...},"ts_ms"}
 //   State/node_info  retained, republished on every (re)connect:
 //     {"schema","node_type","dev_id","features":[{name,unit}...],
-//      "lib_max","fw"}   <- lets an AI agent discover the node
+//      "lib_max","fw","ts_ms"}   <- lets an AI agent discover the node
 //   State/keepalive  every KEEPALIVE_MS + on (re)connect, not retained:
 //     {"uptime_s","rssi","free_heap","pubs","ts_ms"}
 //     liveness beat for dashboards (offline = silence > 3 beats)
 //   Action/feedback  subscribed QoS1, the ONLY input channel:
 //     {"action":"start"}
 //     {"action":"label","label":"belt_slip","by":"agent-01"}
+//     {"action":"discard","batch":"P0001"}  (deletes the stored batch only)
 //     {"action":"normal"}  {"action":"fault"}
+//     {"action":"reset"}   factory wipe - human-initiated only
 //
 // Design rule: publish CONDITION + STATUS, not telemetry. Raw values
 // travel only inside episode summaries (already aggregated on-device).
@@ -31,7 +34,7 @@
 
 struct NodeIdentity {
   const char* dev_id;       // "g100-01"
-  const char* uns_base;     // "v1/Plant01/Motor-Test-Area/Line1/Drive-Station-01"
+  const char* uns_base;     // "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01"
   const char* wifi_ssid;
   const char* wifi_pass;
   const char* mqtt_host;
@@ -50,7 +53,8 @@ public:
   uint32_t publishes() const { return pub_count_; }
 
   bool publishCondition(const char* state, const char* cond_id,
-                        float confidence, uint32_t episode_s, bool retained);
+                        float confidence, uint32_t episode_s, bool retained,
+                        const char* batch = nullptr);
   bool publishEvent(const char* ev, const char* sev, const char* cid,
                     uint32_t duration_s, const char* summary,
                     const float* means);

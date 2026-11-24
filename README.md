@@ -112,14 +112,15 @@ flowchart LR
 
 ### MQTT contract (schema uns-v1.1)
 
-Payload details in `uns/uns_schema_v1.json`; import `uns/uns_namespace.json` into your UNS broker.
+The single contract file is `uns/uns.json` (the Tier0-Edge UNS namespace: site topology + per-topic fields); import it into your UNS platform. Wire contract:
 
 | Topic | Retained | When | Payload |
 |---|---|---|---|
-| `.../State/condition` | yes | state or condition change, (re)connect | `state` (idle/learn/ok/alarm), `condition_id`, `confidence`, `episode_s` |
-| `.../State/event` | no | every episode transition | `event` (open/close/label), `condition_id`, `severity`, `summary`, `meas:{feature:value}` |
-| `.../State/node_info` | yes | every (re)connect | discovery doc: `features` + units, `lib_max`, `fw` |
-| `.../Action/feedback` | subscribed, QoS1 | agent or human input | `start`, `label` (optionally `batch: P0001`), `discard` (batch id), `normal` (theta +10%), `fault` (theta -5%) |
+| `.../State/condition` | yes | state or condition change, (re)connect | `state` (idle/learn/ok/alarm), `condition_id`, `confidence`, `episode_s`, `batch` (the ask's stored id, ONLY while the ask is live), `ts_ms` |
+| `.../State/event` | no | every episode transition | `event` (open/close/label), `condition_id`, `severity`, `summary`, `meas:{feature:value}`, `ts_ms` |
+| `.../State/node_info` | yes | every (re)connect | discovery doc: `features` + units, `lib_max`, `fw`, `ts_ms` |
+| `.../State/keepalive` | no | every 10 s + (re)connect | `uptime_s`, `rssi`, `free_heap`, `pubs`, `ts_ms`; 30 s of silence = OFFLINE for dashboards |
+| `.../Action/feedback` | subscribed, QoS1 | agent or human input | `start`, `label` (optionally `batch: P0001`), `discard` (batch id), `normal` (theta +10%), `fault` (theta -5%), `reset` (factory wipe; human-initiated only) |
 
 An `open` event with `condition_id:"unknown"` is the node asking a question: the whole feedback loop.
 
@@ -138,8 +139,7 @@ Point the agent runtime at the broker with this sheet + `uns/`; it runs every no
 
 ## UNS integration
 
-- `uns/uns_namespace.json`: site topology + topic map; import into your UNS broker.
-- `uns/uns_schema_v1.json`: payload contract v1.1 (breaking changes vs MVP v3 listed inside).
+- `uns/uns.json`: the single contract file - the Tier0-Edge UNS namespace (site topology, per-node feature profiles, per-topic field contract). Import into your UNS platform; the platform exports this same format.
 - Plain MQTT JSON: no vendor lock, no special broker.
 
 ## The learning core at a glance
@@ -293,8 +293,7 @@ Which problem each part solves (reading pointers into the Stream-X paper):
 │   └── main.cpp                      node identity (EDIT HERE)
 │
 ├── uns/                              the "product paper" side
-│   ├── uns_namespace.json            site topology + topic map → import into UNS broker
-│   └── uns_schema_v1.json            payload contract v1.1 (State/*, Action/*)
+│   └── uns.json                      Tier0-Edge UNS namespace: site topology + topic contract (import into UNS)
 │
 ├── agent/
 │   └── skills.md                     6-skill sheet for the central AI agent

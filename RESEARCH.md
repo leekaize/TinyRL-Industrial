@@ -48,7 +48,7 @@ machine learning; LLM agents; Industry 5.0.
 
 **Current answer (single node):** minimal two-way schema closes the loop: telemetry up via `State/*` (`[CAL]/[ARM]/[MON]/[ALARM]`), context down via `Action/*` feedback (`R`). Effective parameters: message set, publish rates, phase control.
 
-**Evidence:** `uns/uns_schema_v1.json`, `uns/uns_namespace.json`, `nodes/core/uns_messaging.h/.cpp`, `agent/skills.md`
+**Evidence:** `uns/uns.json`, `nodes/core/uns_messaging.h/.cpp`, `agent/skills.md`
 
 **Remaining work:**
 

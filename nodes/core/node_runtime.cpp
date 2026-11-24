@@ -70,7 +70,8 @@ const char* SensorNodeApp::libName(int idx) const {
 void SensorNodeApp::publishCondition(bool retained) {
   uint32_t now = millis();
   msg_.publishCondition(mon_.stateString(), conditionId(),
-                        mon_.confidence(), ep_.duration(now), retained);
+                        mon_.confidence(), ep_.duration(now), retained,
+                        ep_pend_ >= 0 ? pend_.at(ep_pend_).id : nullptr);
 }
 
 void SensorNodeApp::saveAll() {
@@ -289,6 +290,14 @@ void SensorNodeApp::applyFeedback(const char* j) {
     saveAll();
     publishCondition(true);
     Serial.printf("[FB] theta lowered to %.2f\n", mon_.theta());
+    return;
+  }
+
+  if (strcmp(action, "reset") == 0) {    // factory wipe - human-initiated
+                                         // only (dashboard double-press
+                                         // confirm or the console)
+    factoryReset();
+    publishCondition(true);              // retained IDLE banner at once
     return;
   }
   // unknown action: ignored

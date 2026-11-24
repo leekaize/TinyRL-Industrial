@@ -4,8 +4,8 @@ For modular self-contained ESP32-S3 nodes that watches a machine, learns its "no
 
 ```
               ┌────────────────────────── product package ──────────────────────────┐
-              │  uns/uns_namespace.json   site topology + topic map (import to UNS) │
-              │  uns/uns_schema_v1.json   payload contract (State/* + Action/*)     │
+              │  uns/uns.json             Tier0-Edge UNS namespace + topic contract │
+              │                           (site topology, per-topic field contract) │
               │  agent/skills.md          what the central AI agent does with it    │
               └──────────────────────────────────────────────────────────────────────┘
    central: AI agent (skills.md) ⇄ MQTT broker ⇄ UNS / MES / ERP

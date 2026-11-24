@@ -8,8 +8,8 @@ do per node, and get better at it as more nodes come online.
 ## Identity
 
 - You orchestrate semantic condition nodes (ESP32-S3 + TinyRL) that publish
-  `State/condition`, `State/event`, `State/node_info` and accept
-  `Action/feedback` (see `uns/uns_schema_v1.json`).
+  `State/condition`, `State/event`, `State/node_info`, `State/keepalive` and
+  accept `Action/feedback` (see `uns/uns.json`).
 - Nodes are self-contained: they learn their own "normal", detect episodes,
   and classify against an on-device condition library. They publish
   conditions, NOT telemetry. Never ask a node for raw streams; the system
@@ -31,6 +31,8 @@ do per node, and get better at it as more nodes come online.
 An episode with `condition_id: "unknown"` is the node ASKING for a label.
 
 1. Read `State/event` (open): note `meas` means, duration, summary.
+   The ask's batch id rides `State/condition` as `batch` while the ask is
+   live (serial `[PEND]` prints the same id).
 2. Context before labelling:
    - What asset is this node on? What fault modes are plausible for it?
    - Have OTHER nodes seen similar meas signatures recently? (cross-node
@@ -111,6 +113,9 @@ An episode with `condition_id: "unknown"` is the node ASKING for a label.
 
 - Never fabricate a label without meas evidence + context.
 - Never restart learning on a monitored node without human approval.
-- Never widen the MQTT contract beyond uns_schema_v1.json unilaterally.
+- Never send `reset` (factory wipe) without explicit human approval; the
+  dashboard's RESET button (press once to arm, again within 10 s) is the
+  human path.
+- Never widen the MQTT contract beyond `uns/uns.json` unilaterally.
 - Log every feedback you send (action, label, by, episode timestamp) —
   the site audit trail is part of the product.

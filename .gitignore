@@ -23,4 +23,4 @@ data/analysis/*
 !data/analysis/vib_4feat.csv
 
 # personal: not part of the public repo
-.anki
+.personal
