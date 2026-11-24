@@ -38,6 +38,7 @@ public:
   void feed(const float* x, const FeatureSpace& fs);
   void close(const char* how, const FeatureSpace& fs, uint32_t now);
   void relabel(const char* slug, CondKind kind, uint32_t now);
+  void drop();                     // silent abort: factory reset, no event
 
   bool     isOpen() const { return open_; }
   const char* cond() const { return cond_[0] ? cond_ : "unknown"; }
@@ -62,4 +63,9 @@ private:
   float    rm2_[cfg::MAX_FEATURES];
   char     cond_[24];
   CondKind kind_ = COND_FAULT;   // unknown episodes never auto-accept
+  bool     relabelled_ = false;  // the state moved under the episode mid-window:
+                                 // the mean spans two states, so the close-time
+                                 // centroid refinement must not run (2026-11-22
+                                 // real-data tour: the relabeled episode's mean
+                                 // dragged 'speed_1' onto speed_2's rows)
 };

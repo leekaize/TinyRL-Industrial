@@ -56,6 +56,7 @@ void EpisodeManager::open(const float* x, const FeatureSpace& fs, uint32_t now) 
   open_ = true;
   t0_ = now;
   n_ = 1;
+  relabelled_ = false;
   for (int f = 0; f < prof_->n_features; ++f) {
     sum_[f] = x[f];
     float r = fs.rel(f, x[f]);
@@ -76,7 +77,7 @@ void EpisodeManager::open(const float* x, const FeatureSpace& fs, uint32_t now) 
   float mean[cfg::MAX_FEATURES];
   means(mean);
   if (fn_) fn_("open", "alarm", cond_, 0, sum, mean);
-  Serial.printf("[EP] open cond=%s\n", cond_);
+  Serial.printf("%s[EP] open cond=%s\n", dev_id_, cond_);
 }
 
 void EpisodeManager::feed(const float* x, const FeatureSpace& fs) {
@@ -106,14 +107,17 @@ void EpisodeManager::close(const char* how, const FeatureSpace& fs, uint32_t now
   // in the recovery tail that precedes the clear, dragging the fault
   // centroid toward the recovered state - the blob that let one learned
   // fault swallow neighbouring states. Fault centroids come from explicit
-  // labels; normals may drift-track.
+  // labels; normals may drift-track. RELABELED episodes never refine
+  // (2026-11-22 real-data tour): their mean spans the state that moved
+  // under them (the transition + the destination's rows) and would drag
+  // the relabeled condition's identity across the gap.
   if (strcmp(how, "cleared") == 0 && strcmp(cond_, "unknown") != 0 &&
-      kind_ == COND_NORMAL && lib_)
+      kind_ == COND_NORMAL && lib_ && !relabelled_)
     lib_->refine(cond_, mean, fs);              // EMA centroid refinement
 
   if (fn_) fn_("close", strcmp(how, "cleared") == 0 ? "alarm" : "info",
                cond_, dur, sum, mean);
-  Serial.printf("[EP] close cond=%s dur=%lus (%s)\n", cond_,
+  Serial.printf("%s[EP] close cond=%s dur=%lus (%s)\n", dev_id_, cond_,
                 (unsigned long)dur, how);
   open_ = false;
 }
@@ -122,9 +126,19 @@ void EpisodeManager::relabel(const char* slug, CondKind kind, uint32_t now) {
   if (!open_) return;
   snprintf(cond_, sizeof(cond_), "%s", slug);
   kind_ = kind;
+  relabelled_ = true;            // the mean now spans two states
   char sum[192];
   summary(sum, sizeof(sum), now);
   float mean[cfg::MAX_FEATURES];
   means(mean);
   if (fn_) fn_("label", "info", cond_, duration(now), sum, mean);
+}
+
+void EpisodeManager::drop() {
+  // factory reset: no summary, no event - the whole world is being wiped
+  open_ = false;
+  t0_ = 0;
+  n_ = 0;
+  cond_[0] = 0;
+  kind_ = COND_FAULT;
 }

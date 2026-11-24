@@ -58,6 +58,11 @@ bool SensorNodeApp::episodeOpen() const { return ep_.isOpen(); }
 uint32_t SensorNodeApp::stepCount() const { return mon_.steps(); }
 uint32_t SensorNodeApp::libSize() const { return lib_.size(); }
 
+float SensorNodeApp::gate() const { return last_gate_; }
+float SensorNodeApp::ragg() const { return last_ragg_; }
+float SensorNodeApp::gateR() const { return last_gate_r_; }
+float SensorNodeApp::acc() const { return last_acc_; }
+
 const char* SensorNodeApp::libName(int idx) const {
   return (idx >= 0 && idx < lib_.size()) ? lib_.at(idx).id : "";
 }
@@ -92,6 +97,7 @@ void SensorNodeApp::begin(ISensorNode& sensor, const NodeIdentity& id) {
 
   persist::beginFS();
   mon_.begin(sensor.profile());
+  mon_.setNodeTag(id.dev_id);   // diagnostics: [WHY]/[RL] lines name their node
 
   bool restored = persist::modelLoad(mon_);
   bool net_ok = false;
@@ -132,6 +138,18 @@ void SensorNodeApp::begin(ISensorNode& sensor, const NodeIdentity& id) {
   }
   Serial.printf("[FS] %d known condition(s)\n", lib_.size());
   Serial.printf("[FS] %d pending batch(es)\n", pend_.size());
+
+  // machine-readable capture header: the serial logger and the offline
+  // replay tool parse this once, then stream [RAW] lines (see tick())
+  char hdr[192];
+  int o = snprintf(hdr, sizeof(hdr),
+                   "[HDR] dev=%s type=%s fw=%s n=%d features=",
+                   id.dev_id, prof.node_type, cfg::FW_VERSION, prof.n_features);
+  for (int f = 0; f < prof.n_features && o > 0 && o < (int)sizeof(hdr) - 24; ++f) {
+    o += snprintf(hdr + o, sizeof(hdr) - o, "%s%s:%s", f ? "," : "",
+                  prof.features[f].name, prof.features[f].unit);
+  }
+  Serial.println(hdr);
 }
 
 void SensorNodeApp::startLearning() {
@@ -174,7 +192,7 @@ void SensorNodeApp::applyFeedback(const char* j) {
       slugify(label, slug, sizeof(slug));
       bool existed = lib_.has(slug);
       int idx = lib_.label(slug, pend_.at(pi).rmean, pend_.at(pi).rstd,
-                           by, kind);
+                           by, kind, &mon_.space());
       if (idx < 0) {
         Serial.println("[FB] condition library full (LIB_MAX)");
         return;
@@ -185,6 +203,9 @@ void SensorNodeApp::applyFeedback(const char* j) {
       if (ep_.isOpen())
         ep_.relabel(slug, kind, millis());   // the operator named the
                                              // state the node is IN
+      mon_.voidPosEvidence();        // the case is closed: a stale pos_acc_
+                                     // reservoir must not re-fire borderline
+                                     // moments after the label (run-120222)
       // governance: a fault label sharpens; mapping a batch onto an
       // EXISTING known state desensitises (user point 6). A NEW normal
       // condition needs no theta change: the net now trains on it and
@@ -210,12 +231,13 @@ void SensorNodeApp::applyFeedback(const char* j) {
     float rmean[cfg::MAX_FEATURES], rstd[cfg::MAX_FEATURES];
     ep_.relMeans(rmean);
     ep_.relStd(rstd);
-    int idx = lib_.label(slug, rmean, rstd, by, kind);
+    int idx = lib_.label(slug, rmean, rstd, by, kind, &mon_.space());
     if (idx < 0) {
       Serial.println("[FB] condition library full (LIB_MAX)");
       return;
     }
     ep_.relabel(slug, kind, millis());
+    mon_.voidPosEvidence();          // the answered ask closes its own case
     if (ep_pend_ >= 0) {             // the answered episode's stored batch
       char bid[12];                  // is consumed with it: no orphan batch
       snprintf(bid, sizeof(bid), "%s", pend_.at(ep_pend_).id);
@@ -312,9 +334,11 @@ void SensorNodeApp::askIfMature(uint32_t now) {
   int pi = pend_.add(rm, rs, ep_.count(), now, mon_.steps());
   if (pi >= 0) {
     ep_pend_ = pi;
-    Serial.printf("[PEND] batch %s stored (%lu samples) - "
-                  "label or discard by id\n",
-                  pend_.at(pi).id, (unsigned long)pend_.at(pi).n);
+    Serial.printf("[PEND] batch %s stored (%lu samples) - asking: settled"
+                  " samples reached ASK_MIN_BATCH %d. Label it by id:"
+                  " 'f %s <label> [normal|fault]'\n",
+                  pend_.at(pi).id, (unsigned long)pend_.at(pi).n,
+                  cfg::ASK_MIN_BATCH, pend_.at(pi).id);
     pend_.save(cfg::PENDING_FILE);
     publishCondition(true);       // condition flips unidentified -> unknown
   }
@@ -362,17 +386,37 @@ void SensorNodeApp::printStatus() {
   sensor_->logLine(line, sizeof(line));
   Serial.printf("[NODE] %s | state=%s cond=%s conf=%.2f\n",
                 line, mon_.stateString(), conditionId(), mon_.confidence());
-  Serial.printf("[RL] step=%lu score=%.3f theta=%.3f params=%u lib=%d pubs=%lu "
-                "qum=%lu heap=%u\n",
+  Serial.printf("%s[RL] step=%lu score=%.3f theta=%.3f params=%u lib=%d pubs=%lu "
+                "qum=%lu heap=%u\n", dev_id_,
                 (unsigned long)mon_.steps(), mon_.score(), mon_.theta(),
                 (unsigned)mon_.paramCount(), lib_.size(),
                 (unsigned long)msg_.publishes(), (unsigned long)quiet_unmatched_,
                 (unsigned)ESP.getFreeHeap());
 }
 
+void SensorNodeApp::toggleVerbose() {
+  sensor_verbose_ = !sensor_verbose_;
+  sensor_->setVerbose(sensor_verbose_);
+  Serial.printf("[NODE] sensor verbose %s\n", sensor_verbose_ ? "ON" : "OFF");
+}
+
+void SensorNodeApp::toggleTrace() {
+  trace_ = !trace_;
+  Serial.printf("[NODE] decision trace %s - every monitor step now prints "
+                "the model internals (x, rel, resid, match, score/gates, "
+                "evidence, training)\n", trace_ ? "ON" : "OFF");
+}
+
+void SensorNodeApp::toggleRawStream() {
+  sensor_->toggleRawStream();     // the sensor acks itself (it knows the
+}                                 // sample rate and line format)
+
 void SensorNodeApp::factoryReset() {
   mon_.factoryReset();
   lib_.clear();
+  ep_.drop();            // an open episode must not survive the wipe (it
+  ep_pend_ = -1;         // re-surfaced as a stale 'superseded' close)
+  ep_ask_dismissed_ = false;
   pend_.begin(sensor_->profile().n_features);
   LittleFS.remove(cfg::PENDING_FILE);
   persist::factoryReset();
@@ -403,6 +447,27 @@ void SensorNodeApp::tick() {
     if (fresh) {
       sensor_->logLine(line, sizeof(line));
       Serial.println(line);
+      // machine line: features in profile() order (the identity that indexes
+      // the model), plus the decision context. The capture tool parses this;
+      // logLine() above stays the human view.
+      float vals[cfg::MAX_FEATURES];
+      sensor_->features(vals);
+      const FeatureProfile& prof = sensor_->profile();
+      char raw[320];
+      int o = snprintf(raw, sizeof(raw), "[RAW] ts_ms=%lu", (unsigned long)now);
+      for (int f = 0; f < prof.n_features && o > 0 && o < (int)sizeof(raw) - 56; ++f) {
+        o += snprintf(raw + o, sizeof(raw) - o, " %s=%.6g",
+                      prof.features[f].name, (double)vals[f]);
+      }
+      snprintf(raw + o, sizeof(raw) - o,
+               " state=%s cond=%s conf=%.2f score=%.3f theta=%.3f"
+               " rag=%.3f gate_r=%.3f acc=%.2f posref=%s",
+               mon_.stateString(), conditionId(), mon_.confidence(),
+               mon_.score(), mon_.theta(),
+               (double)last_ragg_, (double)last_gate_r_, (double)last_acc_,
+               (last_posref_ >= 0 && last_posref_ < (int)lib_.size())
+                   ? lib_.at(last_posref_).id : "-");
+      Serial.println(raw);
     } else {
       Serial.printf("[NODE] no fresh data (failed polls=%lu) - check wiring/bus master\n",
                     (unsigned long)sensor_->failCount());
@@ -416,6 +481,92 @@ void SensorNodeApp::tick() {
       have_raw_ = true;
       TinyRLConditionMonitor::StepOut out;
       mon_.step(last_raw_, out);
+      last_gate_ = out.gate;              // bench figures: the evidence
+      last_ragg_ = out.ragg;              // triple (active gate, positional
+      last_gate_r_ = out.gate_r;          // band, accumulator) from THIS
+      last_acc_ = out.acc;                // step, read via gate()/acc()
+      last_posref_ = out.pos_ref;         // the band the positional evidence
+                                          // was judged against (-1 = none)
+
+      // per-step decision trace (console 'd'): every quantity that drove
+      // this step, so each alarm/clear/ask is explainable from the log
+      if (trace_) {
+        const FeatureProfile& prof = sensor_->profile();
+        float rel[cfg::MAX_FEATURES], resid[cfg::MAX_FEATURES];
+        for (int f = 0; f < prof.n_features; ++f)
+          rel[f] = mon_.space().rel(f, last_raw_[f]);
+        int fr = out.frame;
+        if (fr >= 0 && fr < lib_.size()) {
+          const Condition& fc = lib_.at(fr);
+          for (int f = 0; f < prof.n_features; ++f) {
+            float unit = fc.u[f] > 0 ? fc.u[f] : mon_.space().unit(f);
+            resid[f] = (rel[f] - fc.c[f]) / unit;   // the net's input dim
+          }
+        }
+        Serial.printf("[ST %lu] settled=%d grace=%d sticky=%d frame=%s\n",
+                      (unsigned long)mon_.steps(), out.settled ? 1 : 0,
+                      out.in_grace ? 1 : 0, out.sticky ? 1 : 0,
+                      libName(fr));
+        Serial.printf("  x=");
+        for (int f = 0; f < prof.n_features; ++f)
+          Serial.printf("%s%.4g", f ? "," : "", (double)last_raw_[f]);
+        Serial.printf("\n  rel=");
+        for (int f = 0; f < prof.n_features; ++f)
+          Serial.printf("%s%.3f", f ? "," : "", (double)rel[f]);
+        if (fr >= 0) {
+          Serial.printf("\n  resid=");
+          for (int f = 0; f < prof.n_features; ++f)
+            Serial.printf("%s%.3f", f ? "," : "", (double)resid[f]);
+        }
+        Serial.printf("\n");
+        Serial.printf("  match=%s d=%.2f (alarm edge %.1f) conf=%.2f"
+                      " | surpr=%.3f score=%.3f base=%.3f\n",
+                      libName(out.matched), (double)out.d_match,
+                      (double)cfg::QUIET_Q, (double)mon_.confidence(),
+                      (double)out.surprise, (double)mon_.score(),
+                      (double)mon_.noveltyBase());
+        if (out.matched >= 0 && out.matched < lib_.size()) {
+          const Condition& mc = lib_.at(out.matched);
+          Serial.printf("  gate: theta=%.3f active=%.3f"
+                        " band(mu=%.3f sd=%.3f n=%lu/16)"
+                        " | rag=%.2f gate_r=%.2f band(mu=%.2f sd=%.2f n=%lu/16)\n",
+                        (double)mon_.theta(), (double)out.gate,
+                        (double)mc.s_mu,
+                        (double)sqrtf(mc.s_m2 / (float)(mc.s_n ? mc.s_n : 1)),
+                        (unsigned long)mc.s_n,
+                        (double)out.ragg, (double)out.gate_r,
+                        (double)mc.r_mu,
+                        (double)sqrtf(mc.r_m2 / (float)(mc.r_n ? mc.r_n : 1)),
+                        (unsigned long)mc.r_n);
+        } else {
+          Serial.printf("  gate: theta=%.3f active=%.3f (unknown state)"
+                        " | rag=%.2f gate_r=%.2f\n",
+                        (double)mon_.theta(), (double)out.gate,
+                        (double)out.ragg, (double)out.gate_r);
+        }
+#if defined(MONITOR_REL_OBS) || defined(MONITOR_COND_OBS)
+        Serial.printf("  ev=%+.3f acc=%.2f [alarm@%.0f clear@%.0f cap@%.0f]"
+                      " | train=%d lr=%.4g (%.2fx)\n",
+                      (double)out.ev, (double)out.acc,
+                      (double)cfg::ACC_ALARM, (double)cfg::ACC_CLEAR,
+                      (double)cfg::ACC_CAP,
+                      out.trained ? 1 : 0,
+                      out.lr_frac >= 0
+                          ? (double)(cfg::MONITOR_LR * out.lr_frac) : 0.0,
+                      (double)out.lr_frac);
+#else
+        Serial.printf("  latch hi=%d lo=%d | train=%d lr=%.4g (%.2fx)\n",
+                      mon_.zHi(), mon_.zLo(),
+                      out.trained ? 1 : 0,
+                      out.lr_frac >= 0
+                          ? (double)(cfg::MONITOR_LR * out.lr_frac) : 0.0,
+                      (double)out.lr_frac);
+#endif
+        if (ep_.isOpen())
+          Serial.printf("  ep: open cond=%s n=%lu%s\n", ep_.cond(),
+                        (unsigned long)ep_.count(),
+                        ep_pend_ >= 0 ? " (batch stored)" : "");
+      }
 
       // NOTE: no supersede on transitions here. A noise flicker looks
       // exactly like a small transition to a vibration node (its fault
@@ -437,6 +588,10 @@ void SensorNodeApp::tick() {
           lib_.label("op_stopped", zero, zero, "baseline", COND_NORMAL);
           lib_.save(cfg::COND_FILE);
           Serial.println("[LIB] baseline 'op_stopped' registered (normal)");
+          Serial.println("[WHY] first commissioning: the CAL baseline"
+                         " auto-registers as the origin condition (centroid"
+                         " 0, CAL units) - every other machine state will"
+                         " alarm and ask until you label it");
         }
       }
 
@@ -500,8 +655,8 @@ void SensorNodeApp::tick() {
           if (stale) ++ident_drift_; else ident_drift_ = 0;
           if (ident_drift_ >= cfg::IDENT_DRIFT_N) {
             ident_drift_ = 0;
-            Serial.printf("[EP] state moved under the episode - "
-                          "re-identifying\n");
+            Serial.printf("%s[EP] state moved under the episode - "
+                          "re-identifying\n", dev_id_);
             ep_.close("superseded", mon_.space(), now);
             ep_pend_ = -1;            // the old batch stays for late labels
             ep_ask_dismissed_ = false;  // a new occurrence may ask again

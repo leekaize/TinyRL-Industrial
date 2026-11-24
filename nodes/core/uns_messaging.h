@@ -10,6 +10,9 @@
 //   State/node_info  retained, republished on every (re)connect:
 //     {"schema","node_type","dev_id","features":[{name,unit}...],
 //      "lib_max","fw"}   <- lets an AI agent discover the node
+//   State/keepalive  every KEEPALIVE_MS + on (re)connect, not retained:
+//     {"uptime_s","rssi","free_heap","pubs","ts_ms"}
+//     liveness beat for dashboards (offline = silence > 3 beats)
 //   Action/feedback  subscribed QoS1, the ONLY input channel:
 //     {"action":"start"}
 //     {"action":"label","label":"belt_slip","by":"agent-01"}
@@ -52,6 +55,7 @@ public:
                     uint32_t duration_s, const char* summary,
                     const float* means);
   bool publishNodeInfo();                // retained discovery document
+  bool publishKeepalive();               // liveness beat (see node_config.h)
 
 private:
   void callback(char* topic, uint8_t* payload, unsigned int len);
@@ -62,7 +66,8 @@ private:
   WiFiClient     net_;
   PubSubClient   mqtt_{net_};    // bound to the client at construction
 
-  char t_cond_[112], t_evt_[112], t_fb_[112], t_info_[112];
+  char t_cond_[112], t_evt_[112], t_fb_[112], t_info_[112], t_ka_[112];
   uint32_t pub_count_ = 0;
+  uint32_t last_ka_ms_ = 0;
   bool     wifi_was_up_ = false;
 };

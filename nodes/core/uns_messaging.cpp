@@ -18,6 +18,7 @@ void UnsMessaging::begin(const NodeIdentity& id, const FeatureProfile& prof,
   snprintf(t_evt_,  sizeof(t_evt_),  "%s/State/event",     id_.uns_base);
   snprintf(t_fb_,   sizeof(t_fb_),   "%s/Action/feedback",  id_.uns_base);
   snprintf(t_info_, sizeof(t_info_), "%s/State/node_info",  id_.uns_base);
+  snprintf(t_ka_,   sizeof(t_ka_),   "%s/State/keepalive",  id_.uns_base);
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -45,6 +46,7 @@ void UnsMessaging::maintain() {
       if (mqtt_.connect(id_.dev_id)) {
         mqtt_.subscribe(t_fb_, 1);
         publishNodeInfo();
+        publishKeepalive();          // first beat at once: dashboards see us
         wifi_was_up_ = true;
         Serial.println("[NET] MQTT connected - Action/feedback subscribed");
       }
@@ -52,6 +54,7 @@ void UnsMessaging::maintain() {
     return;
   }
   mqtt_.loop();
+  if (millis() - last_ka_ms_ >= cfg::KEEPALIVE_MS) publishKeepalive();
 }
 
 bool UnsMessaging::publishCondition(const char* state, const char* cond_id,
@@ -108,6 +111,19 @@ bool UnsMessaging::publishNodeInfo() {
            "],\"lib_max\":%d,\"fw\":\"%s\",\"ts_ms\":%lu}",
            cfg::LIB_MAX, cfg::FW_VERSION, (unsigned long)millis());
   bool ok = mqtt_.publish(t_info_, j, true);
+  if (ok) pub_count_++;
+  return ok;
+}
+
+bool UnsMessaging::publishKeepalive() {
+  char j[160];
+  int n = snprintf(j, sizeof(j),
+    "{\"uptime_s\":%lu,\"rssi\":%d,\"free_heap\":%lu,\"pubs\":%lu,\"ts_ms\":%lu}",
+    (unsigned long)(millis() / 1000), (int)WiFi.RSSI(),
+    (unsigned long)ESP.getFreeHeap(), (unsigned long)pub_count_,
+    (unsigned long)millis());
+  bool ok = n > 0 && mqtt_.publish(t_ka_, j);
+  last_ka_ms_ = millis();
   if (ok) pub_count_++;
   return ok;
 }

@@ -46,6 +46,16 @@ public:
   virtual uint32_t lastOkMs() const = 0;
   virtual uint32_t failCount() const = 0;
 
+  // Bus-level diagnostics (per-transaction TX/reply hex). Default no-op:
+  // only sensor packages with a wire-level trace override it.
+  virtual void setVerbose(bool v) { (void)v; }
+
+  // Raw-sample stream for offline feature studies (console 'R'): prints
+  // one line of raw engineering-unit samples per sensor sample beat.
+  // Default no-op: only sensor packages with a useful raw stream (vib)
+  // override it; the drive's register polling has nothing to stream.
+  virtual void toggleRawStream() { }
+
   virtual const FeatureProfile& profile() const = 0;
 
   // out must hold profile().n_features floats (engineering units).
