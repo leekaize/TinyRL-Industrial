@@ -6,5 +6,11 @@ __pycache__/
 # web bench exports (research data; force-add a paper run if wanted)
 tests/bench/runs/
 
+# host test logs (full stage output; console shows verdict lines only)
+tests/logs/
+
+# captured hardware sessions (raw serial + parsed csv; replay input)
+data/serial/
+
 # personal: not part of the public repo
 .anki
