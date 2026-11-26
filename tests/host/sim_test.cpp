@@ -117,8 +117,8 @@ int main() {
   // has no previous-step tensor, so mon2's first surprise differs from
   // mon's; settle both on quiet steps until the EMA history washes out
   // (0.85^70 ~ 1e-5), then compare. Residual divergence stays bounded by
-  // the unsaved optimizer state (traces + leaky max), see net.bin note in
-  // ARCHITECTURE.md.
+  // the unsaved optimizer state (traces + leaky max), see the net.bin note
+  // in docs/system/architecture.md (boot and persistence).
   TinyRLConditionMonitor::StepOut out2;
   for (int k = 0; k < 70; ++k, ++t) {
     sample(x, t, false);
