@@ -9,10 +9,6 @@ tests/bench/runs/
 # host test logs (full stage output; console shows verdict lines only)
 tests/logs/
 
-# session handoffs are working-tree-only records (RESEARCH.md carries the
-# durable content and cites these files as local evidence pointers)
-SESSION-HANDOFF-*.md
-
 # recorded campaign: the suite's runtime inputs + the irreplaceable raw
 # captures are tracked; streams, study reports and broken exports stay
 # local (all regenerate from data/raw/ or are superseded)
@@ -24,3 +20,8 @@ data/analysis/*
 
 # personal: not part of the public repo
 .personal
+
+# docs site (vitepress): sources in docs/, build output and cache stay local
+node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/

@@ -1,0 +1,19 @@
+{
+  "name": "tinyrl-industrial-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "node parse_diagrams.mjs && vitepress build",
+    "preview": "vitepress preview",
+    "deploy": "bash deploy.sh",
+    "check:diagrams": "node parse_diagrams.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.1",
+    "mermaid": "^11.17.2",
+    "vitepress": "^1.6.3",
+    "vitepress-plugin-mermaid": "^2.0.17",
+    "wrangler": "^4.168.0"
+  }
+}
