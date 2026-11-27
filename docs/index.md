@@ -2,8 +2,7 @@
 layout: home
 
 hero:
-  name: TinyRL-Industrial
-  text: 'Edge nodes that learn machine conditions'
+  text: '<span style="color: var(--vp-c-brand-1);">Edge nodes</span> that learn machine conditions'
   tagline: 'Intelligent sensing nodes monitor a machine and learn its normal states on-device with streaming reinforcement learning. They work with a human or an AI agent: context flows down, conditions flow up, and alarms go out only when something needs attention.'
   actions:
     - theme: brand
