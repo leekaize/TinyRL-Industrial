@@ -8,141 +8,6 @@
         "env": []
     },
     {
-        "id": "35e7927e67ce7353",
-        "type": "comment",
-        "z": "f2167687c85f59b3",
-        "name": "README — import + ISA-101 + Tier0-Edge adaptation",
-        "info": "## TinyRL UNS alarm dashboard (ISA-101 style) - import notes\n\n**Requires**: palette `node-red-dashboard` (Menu -> Manage palette -> Install) + built-in MQTT nodes. No other palettes.\n\n**Import**: Menu -> Import -> select file -> Deploy. Dashboard: `http://<node-red-host>:1880/ui`\nTheme note: keep the dashboard theme light/grey (Dashboard -> Theme) to match the ISA-101 baseline.\n\n**ISA-101 design rules applied**\n- Greyscale baseline: healthy states (IDLE / LEARNING / OK) are GREY; colour is reserved for abnormal\n- RED = alarm condition; YELLOW = attention/diagnostic (unlabeled 'unknown' open ask)\n- Command buttons are neutral; only LABEL is yellow (it answers an attention state)\n- Level-1 display: state banner + confidence trend + event list + command row\n- Detail data (fw, features, lib_max, node identity) intentionally left to Tier0\n\n**Broker**: default `192.168.201.99:1883` (site default) - edit the \"UNS broker - EDIT ME\" config node.\n**Tier0-Edge**: point at your UNS broker (default `mqtt.tier0.dev:1883`) with the credentials\ngenerated on the Edge tab. Inside Tier0's built-in Node-RED, delete this broker config and\nre-select the UNS broker on each mqtt node (Tier0 binds the embedded broker by flow name).\n\n**Layout**: three columns - Machine (both nodes in one ISA-101 table;\nthe OPEN ASK badge carries the ask's batch id), Events (one shared log\nwith a batch column), Label & control. All pipelines live on this one\nsheet; each message's node is derived from its topic.\n\n**Topics** (g100 UNS_BASE = `v1/Plant01/Motor-Test-Area/Line1/Power-Node-01`)\n- subscribe: `State/condition`, `State/event`, `State/keepalive`, `Action/feedback` (parsed JSON);\n  keepalive beats every 10 s, the status chip flips OFFLINE (red) after 30 s of silence\n- publish: `Action/feedback`, QoS 1, retain=false:\n  `{\"action\":\"start\"}` | `{\"action\":\"normal\"}` | `{\"action\":\"fault\"}` |\n  `{\"action\":\"discard\",\"batch\":\"P0001\"}` | `{\"action\":\"label\",\"label\":\"<slug>\",\"by\":\"human|agent|console\"}`\n\n**meas key vocabulary** (from `uns/uns.json`): g100 fset [Hz], v [V], i [A], pf [];\nvib rms [g], b2 [g2], rms_y [g], centroid [Hz].\n\n**Ask flow**: `State/condition` carries `batch` while an ask is live - the\nMachine table shows it, and LABEL/DISCARD answer that id.\n\n**Controls**: pick the node, then LABEL answers its ask (label slug + optional batch id +\nkind normal/fault; kind defaults to fault, empty batch = the live episode), DISCARD deletes\nthe stored batch (model untouched), START/NORMAL/FAULT send bare verbs, RESET factory-wipes\nthe node - press once to arm, again within 10 s to confirm. Every command publishes\n`{\"action\":...}` JSON to the selected node's `Action/feedback` - the node parses JSON;\na bare string parses to all-empty fields.\n\n**Cadence note**: `State/condition` is change-driven + retained (quiet = healthy), so the\n\"last update [s]\" counter is informational only - it ticks via a 5 s heartbeat inject and\ndoes NOT raise a stale alarm.\n\n**SIM injects**: editor-only, for offline testing - ignore in production.\n",
-        "x": 380,
-        "y": 540,
-        "wires": []
-    },
-    {
-        "id": "ac93aa655671cdae",
-        "type": "mqtt in",
-        "z": "f2167687c85f59b3",
-        "name": "in: State/condition",
-        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/condition",
-        "qos": "2",
-        "datatype": "json",
-        "broker": "cfg_broker_uns",
-        "nl": false,
-        "rap": true,
-        "rh": 0,
-        "inputs": 0,
-        "x": 390,
-        "y": 80,
-        "wires": [
-            [
-                "fn_machine_merge"
-            ]
-        ]
-    },
-    {
-        "id": "0bb3d06f39b55d28",
-        "type": "mqtt in",
-        "z": "f2167687c85f59b3",
-        "name": "in: State/event",
-        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/event",
-        "qos": "2",
-        "datatype": "json",
-        "broker": "cfg_broker_uns",
-        "nl": false,
-        "rap": true,
-        "rh": 0,
-        "inputs": 0,
-        "x": 390,
-        "y": 140,
-        "wires": [
-            [
-                "fn_events_merge"
-            ]
-        ]
-    },
-    {
-        "id": "c18e200e34c0d218",
-        "type": "inject",
-        "z": "f2167687c85f59b3",
-        "name": "heartbeat 5s (age ticker)",
-        "props": [
-            {
-                "p": "payload"
-            }
-        ],
-        "repeat": "5",
-        "crontab": "",
-        "once": true,
-        "onceDelay": 1,
-        "topic": "",
-        "payload": "heartbeat",
-        "payloadType": "str",
-        "x": 400,
-        "y": 280,
-        "wires": [
-            [
-                "fn_machine_merge"
-            ]
-        ]
-    },
-    {
-        "id": "95ea395d762e3e7e",
-        "type": "inject",
-        "z": "f2167687c85f59b3",
-        "name": "SIM State/condition (alarm)",
-        "props": [
-            {
-                "p": "payload"
-            },
-            {
-                "p": "topic",
-                "vt": "str"
-            }
-        ],
-        "repeat": "",
-        "crontab": "",
-        "once": false,
-        "onceDelay": 0.1,
-        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/condition",
-        "payload": "{\"state\": \"alarm\", \"condition_id\": \"belt_slip\", \"confidence\": 0.62, \"episode_s\": 38, \"ts_ms\": 4287361}",
-        "payloadType": "json",
-        "x": 410,
-        "y": 340,
-        "wires": [
-            [
-                "fn_machine_merge"
-            ]
-        ]
-    },
-    {
-        "id": "89d20e42f3cdd7e7",
-        "type": "inject",
-        "z": "f2167687c85f59b3",
-        "name": "SIM State/event (close)",
-        "props": [
-            {
-                "p": "payload"
-            },
-            {
-                "p": "topic",
-                "vt": "str"
-            }
-        ],
-        "repeat": "",
-        "crontab": "",
-        "once": false,
-        "onceDelay": 0.1,
-        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/event",
-        "payload": "{\"event\": \"close\", \"condition_id\": \"belt_slip\", \"severity\": \"alarm\", \"duration_s\": 38, \"summary\": \"g100-01: fset=10.0Hz, v=230.5V, i=0.68A, pf=0.55 for 38s\", \"meas\": {\"fset\": 10.0, \"v\": 230.5, \"i\": 0.68, \"pf\": 0.55}, \"ts_ms\": 4287361}",
-        "payloadType": "json",
-        "x": 410,
-        "y": 400,
-        "wires": [
-            [
-                "fn_events_merge"
-            ]
-        ]
-    },
-    {
         "id": "cfg_broker_uns",
         "type": "mqtt-broker",
         "name": "UNS broker — EDIT ME",
@@ -187,6 +52,283 @@
         }
     },
     {
+        "id": "grp_controls",
+        "type": "ui_group",
+        "name": "Label & control",
+        "tab": "18a510a20cb04067",
+        "order": 3,
+        "disp": true,
+        "width": "6",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "grp_machine",
+        "type": "ui_group",
+        "name": "Machine",
+        "tab": "18a510a20cb04067",
+        "order": 1,
+        "disp": true,
+        "width": "6",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "grp_events_all",
+        "type": "ui_group",
+        "name": "Events",
+        "tab": "18a510a20cb04067",
+        "order": 2,
+        "disp": true,
+        "width": "6",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "grp_ai",
+        "type": "ui_group",
+        "name": "AI assistant",
+        "tab": "18a510a20cb04067",
+        "order": 4,
+        "disp": true,
+        "width": "12",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "2f55dea8a1d3bcba",
+        "type": "ui_base",
+        "theme": {
+            "name": "theme-light",
+            "lightTheme": {
+                "default": "#0094CE",
+                "baseColor": "#0094CE",
+                "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+                "edited": true,
+                "reset": false
+            },
+            "darkTheme": {
+                "default": "#097479",
+                "baseColor": "#097479",
+                "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif",
+                "edited": false
+            },
+            "customTheme": {
+                "name": "Untitled Theme 1",
+                "default": "#4B7930",
+                "baseColor": "#4B7930",
+                "baseFont": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif"
+            },
+            "themeState": {
+                "base-color": {
+                    "default": "#0094CE",
+                    "value": "#0094CE",
+                    "edited": false
+                },
+                "page-titlebar-backgroundColor": {
+                    "value": "#0094CE",
+                    "edited": false
+                },
+                "page-backgroundColor": {
+                    "value": "#fafafa",
+                    "edited": false
+                },
+                "page-sidebar-backgroundColor": {
+                    "value": "#ffffff",
+                    "edited": false
+                },
+                "group-textColor": {
+                    "value": "#1bbfff",
+                    "edited": false
+                },
+                "group-borderColor": {
+                    "value": "#ffffff",
+                    "edited": false
+                },
+                "group-backgroundColor": {
+                    "value": "#ffffff",
+                    "edited": false
+                },
+                "widget-textColor": {
+                    "value": "#111111",
+                    "edited": false
+                },
+                "widget-backgroundColor": {
+                    "value": "#0094ce",
+                    "edited": false
+                },
+                "widget-borderColor": {
+                    "value": "#ffffff",
+                    "edited": false
+                },
+                "base-font": {
+                    "value": "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen-Sans,Ubuntu,Cantarell,Helvetica Neue,sans-serif"
+                }
+            },
+            "angularTheme": {
+                "primary": "indigo",
+                "accents": "blue",
+                "warn": "red",
+                "background": "grey",
+                "palette": "light"
+            }
+        },
+        "site": {
+            "name": "Node-RED Dashboard",
+            "hideToolbar": "true",
+            "allowSwipe": "false",
+            "lockMenu": "false",
+            "allowTempTheme": "true",
+            "dateFormat": "DD/MM/YYYY",
+            "sizes": {
+                "sx": 48,
+                "sy": 48,
+                "gx": 6,
+                "gy": 6,
+                "cx": 6,
+                "cy": 6,
+                "px": 0,
+                "py": 0
+            }
+        }
+    },
+    {
+        "id": "35e7927e67ce7353",
+        "type": "comment",
+        "z": "f2167687c85f59b3",
+        "name": "README — import + ISA-101 + Tier0-Edge adaptation",
+        "info": "## TinyRL UNS alarm dashboard (ISA-101 style) - import notes\n\n**Requires**: palette `node-red-dashboard` (Menu -> Manage palette -> Install) + built-in MQTT nodes. No other palettes.\n\n**Import**: Menu -> Import -> select file -> Deploy. Dashboard: `http://<node-red-host>:1880/ui`\nTheme note: keep the dashboard theme light/grey (Dashboard -> Theme) to match the ISA-101 baseline.\n\n**ISA-101 design rules applied**\n- Greyscale baseline: healthy states (IDLE / LEARNING / OK) are GREY; colour is reserved for abnormal\n- RED = alarm OR a labeled FAULT condition (the State/condition kind); YELLOW = attention/diagnostic (unlabeled 'unknown' open ask)\n- Banner line 1: <id> <CONDITION> [FAULT|NORMAL chip] (STATE) - the condition name is the large element\n- Command buttons are neutral; only LABEL is yellow (it answers an attention state)\n- Level-1 display: state banner + confidence trend + event list + command row\n- Detail data (fw, features, lib_max, node identity) intentionally left to Tier0\n\n**Broker**: default `192.168.201.99:1883` (site default) - edit the \"UNS broker - EDIT ME\" config node.\n**Tier0-Edge**: point at your UNS broker (default `mqtt.tier0.dev:1883`) with the credentials\ngenerated on the Edge tab. Inside Tier0's built-in Node-RED, delete this broker config and\nre-select the UNS broker on each mqtt node (Tier0 binds the embedded broker by flow name).\n\n**Layout**: three columns - Machine (both nodes in one ISA-101 table;\nthe OPEN ASK badge carries the ask's batch id), Events (one shared log\nwith a batch column), Label & control. All pipelines live on this one\nsheet; each message's node is derived from its topic.\n\n**Topics** (g100 UNS_BASE = `v1/Plant01/Motor-Test-Area/Line1/Power-Node-01`)\n- subscribe: `State/condition`, `State/event`, `State/keepalive`, `Action/feedback` (parsed JSON);\n  keepalive beats every 10 s, the status chip flips OFFLINE (red) after 30 s of silence\n  State/condition carries kind=normal|fault when condition_id names a labeled library entry\n- publish: `Action/feedback`, QoS 1, retain=false:\n  `{\"action\":\"start\"}` | `{\"action\":\"normal\"}` | `{\"action\":\"fault\"}` |\n  `{\"action\":\"discard\",\"batch\":\"P0001\"}` | `{\"action\":\"label\",\"label\":\"<slug>\",\"by\":\"human|agent|console\"}`\n\n**meas key vocabulary** (from `uns/uns.json`): g100 fset [Hz], v [V], i [A], pf [];\nvib rms [g], b2 [g2], rms_y [g], centroid [Hz].\n\n**Ask flow**: `State/condition` carries `batch` while an ask is live - the\nMachine table shows it, and LABEL/DISCARD answer that id.\n\n**Controls**: pick the node, then LABEL answers its ask (label slug + optional batch id +\nkind normal/fault; kind defaults to fault, empty batch = the live episode), DISCARD deletes\nthe stored batch (model untouched), START/NORMAL/FAULT send bare verbs, RESET factory-wipes\nthe node - press once to arm, again within 10 s to confirm. Every command publishes\n`{\"action\":...}` JSON to the selected node's `Action/feedback` - the node parses JSON;\na bare string parses to all-empty fields.\n\n**Cadence note**: `State/condition` is change-driven + retained (quiet = healthy), so the\n\"last update [s]\" counter is informational only - it ticks via a 5 s heartbeat inject and\ndoes NOT raise a stale alarm.\n\n**SIM injects**: editor-only, for offline testing - ignore in production.\n",
+        "x": 480,
+        "y": 560,
+        "wires": []
+    },
+    {
+        "id": "ac93aa655671cdae",
+        "type": "mqtt in",
+        "z": "f2167687c85f59b3",
+        "name": "in: State/condition",
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/condition",
+        "qos": "2",
+        "datatype": "json",
+        "broker": "cfg_broker_uns",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 490,
+        "y": 100,
+        "wires": [
+            [
+                "fn_machine_merge",
+                "ai_fn_watch"
+            ]
+        ]
+    },
+    {
+        "id": "0bb3d06f39b55d28",
+        "type": "mqtt in",
+        "z": "f2167687c85f59b3",
+        "name": "in: State/event",
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/event",
+        "qos": "2",
+        "datatype": "json",
+        "broker": "cfg_broker_uns",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 490,
+        "y": 160,
+        "wires": [
+            [
+                "fn_events_merge"
+            ]
+        ]
+    },
+    {
+        "id": "c18e200e34c0d218",
+        "type": "inject",
+        "z": "f2167687c85f59b3",
+        "name": "heartbeat 5s (age ticker)",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "5",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 1,
+        "topic": "",
+        "payload": "heartbeat",
+        "payloadType": "str",
+        "x": 500,
+        "y": 300,
+        "wires": [
+            [
+                "fn_machine_merge"
+            ]
+        ]
+    },
+    {
+        "id": "95ea395d762e3e7e",
+        "type": "inject",
+        "z": "f2167687c85f59b3",
+        "name": "SIM State/condition (alarm)",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/condition",
+        "payload": "{\"state\": \"alarm\", \"condition_id\": \"belt_slip\", \"kind\": \"fault\", \"confidence\": 0.62, \"episode_s\": 38, \"ts_ms\": 4287361}",
+        "payloadType": "json",
+        "x": 510,
+        "y": 360,
+        "wires": [
+            [
+                "fn_machine_merge"
+            ]
+        ]
+    },
+    {
+        "id": "89d20e42f3cdd7e7",
+        "type": "inject",
+        "z": "f2167687c85f59b3",
+        "name": "SIM State/event (close)",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "v1/Plant01/Motor-Test-Area/Line1/Power-Node-01/State/event",
+        "payload": "{\"event\": \"close\", \"condition_id\": \"belt_slip\", \"severity\": \"alarm\", \"duration_s\": 38, \"summary\": \"g100-01: fset=10.0Hz, v=230.5V, i=0.68A, pf=0.55 for 38s\", \"meas\": {\"fset\": 10.0, \"v\": 230.5, \"i\": 0.68, \"pf\": 0.55}, \"ts_ms\": 4287361}",
+        "payloadType": "json",
+        "x": 510,
+        "y": 420,
+        "wires": [
+            [
+                "fn_events_merge"
+            ]
+        ]
+    },
+    {
         "id": "5c1a7b3e9d2f0001",
         "type": "mqtt in",
         "z": "f2167687c85f59b3",
@@ -199,11 +341,12 @@
         "rap": true,
         "rh": 0,
         "inputs": 0,
-        "x": 390,
-        "y": 80,
+        "x": 490,
+        "y": 100,
         "wires": [
             [
-                "fn_machine_merge"
+                "fn_machine_merge",
+                "ai_fn_watch"
             ]
         ]
     },
@@ -220,8 +363,8 @@
         "rap": true,
         "rh": 0,
         "inputs": 0,
-        "x": 390,
-        "y": 140,
+        "x": 490,
+        "y": 160,
         "wires": [
             [
                 "fn_events_merge"
@@ -245,8 +388,8 @@
         "topic": "",
         "payload": "heartbeat",
         "payloadType": "str",
-        "x": 400,
-        "y": 280,
+        "x": 500,
+        "y": 300,
         "wires": [
             [
                 "fn_machine_merge"
@@ -272,10 +415,10 @@
         "once": false,
         "onceDelay": 0.1,
         "topic": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Node-01/State/condition",
-        "payload": "{\"state\": \"alarm\", \"condition_id\": \"imbalance\", \"confidence\": 0.62, \"episode_s\": 38, \"ts_ms\": 4287361}",
+        "payload": "{\"state\": \"alarm\", \"condition_id\": \"imbalance\", \"kind\": \"fault\", \"confidence\": 0.62, \"episode_s\": 38, \"ts_ms\": 4287361}",
         "payloadType": "json",
-        "x": 410,
-        "y": 340,
+        "x": 510,
+        "y": 360,
         "wires": [
             [
                 "fn_machine_merge"
@@ -303,8 +446,8 @@
         "topic": "v1/Plant01/Motor-Test-Area/Line1/Vibration-Node-01/State/event",
         "payload": "{\"event\": \"close\", \"condition_id\": \"speed_1_imbalance\", \"severity\": \"alarm\", \"duration_s\": 38, \"summary\": \"vib-01: rms=0.213g, b2=0.012g2, centroid=49.8Hz for 38s\", \"meas\": {\"rms\": 0.213, \"b2\": 0.012, \"rms_y\": 0.087, \"centroid\": 49.8}, \"ts_ms\": 4287361}",
         "payloadType": "json",
-        "x": 410,
-        "y": 400,
+        "x": 510,
+        "y": 420,
         "wires": [
             [
                 "fn_events_merge"
@@ -324,8 +467,8 @@
         "rap": true,
         "rh": 0,
         "inputs": 0,
-        "x": 390,
-        "y": 20,
+        "x": 490,
+        "y": 40,
         "wires": [
             [
                 "fn_machine_merge"
@@ -345,24 +488,13 @@
         "rap": true,
         "rh": 0,
         "inputs": 0,
-        "x": 390,
-        "y": 20,
+        "x": 490,
+        "y": 40,
         "wires": [
             [
                 "fn_machine_merge"
             ]
         ]
-    },
-    {
-        "id": "grp_controls",
-        "type": "ui_group",
-        "name": "Label & control",
-        "tab": "18a510a20cb04067",
-        "order": 3,
-        "disp": true,
-        "width": "6",
-        "collapse": false,
-        "className": ""
     },
     {
         "id": "ctl_node",
@@ -374,7 +506,7 @@
         "place": "Select",
         "group": "grp_controls",
         "order": 1,
-        "width": "0",
+        "width": 0,
         "height": 0,
         "passthru": false,
         "multiple": false,
@@ -394,8 +526,8 @@
         "topic": "selNode",
         "topicType": "str",
         "className": "",
-        "x": 0,
-        "y": 560,
+        "x": 100,
+        "y": 580,
         "wires": [
             [
                 "ctl_fn_store"
@@ -411,7 +543,7 @@
         "tooltip": "stored batch to label or discard, e.g. P0001; empty = the live episode",
         "group": "grp_controls",
         "order": 2,
-        "width": "0",
+        "width": 0,
         "height": 0,
         "passthru": false,
         "mode": "text",
@@ -420,8 +552,8 @@
         "sendOnBlur": true,
         "className": "",
         "topicType": "str",
-        "x": 0,
-        "y": 600,
+        "x": 100,
+        "y": 620,
         "wires": [
             [
                 "ctl_fn_store"
@@ -438,7 +570,7 @@
         "place": "Select",
         "group": "grp_controls",
         "order": 3,
-        "width": "0",
+        "width": 0,
         "height": 0,
         "passthru": false,
         "multiple": false,
@@ -458,8 +590,8 @@
         "topic": "selKind",
         "topicType": "str",
         "className": "",
-        "x": 0,
-        "y": 640,
+        "x": 100,
+        "y": 660,
         "wires": [
             [
                 "ctl_fn_store"
@@ -475,7 +607,7 @@
         "tooltip": "slug for the LABEL button, e.g. speed_1",
         "group": "grp_controls",
         "order": 4,
-        "width": "0",
+        "width": 0,
         "height": 0,
         "passthru": false,
         "mode": "text",
@@ -484,8 +616,8 @@
         "sendOnBlur": true,
         "className": "",
         "topicType": "str",
-        "x": 0,
-        "y": 680,
+        "x": 100,
+        "y": 700,
         "wires": [
             [
                 "ctl_fn_store"
@@ -499,8 +631,9 @@
         "name": "",
         "group": "grp_controls",
         "order": 5,
-        "width": "0",
+        "width": 0,
         "height": 0,
+        "passthru": false,
         "label": "LABEL",
         "tooltip": "answer the selected node's ask: slug (+ batch id, kind)",
         "color": "#1a1a1a",
@@ -511,14 +644,13 @@
         "payloadType": "str",
         "topic": "label",
         "topicType": "str",
-        "x": 0,
-        "y": 720,
+        "x": 100,
+        "y": 740,
         "wires": [
             [
                 "ctl_fn_build"
             ]
-        ],
-        "passthru": false
+        ]
     },
     {
         "id": "ctl_btn_discard",
@@ -527,8 +659,9 @@
         "name": "",
         "group": "grp_controls",
         "order": 6,
-        "width": "0",
+        "width": 0,
         "height": 0,
+        "passthru": false,
         "label": "DISCARD batch",
         "tooltip": "delete the stored batch only - model untouched, same unknown re-asks",
         "color": "#1a1a1a",
@@ -539,14 +672,13 @@
         "payloadType": "str",
         "topic": "discard",
         "topicType": "str",
-        "x": 760,
-        "y": 0,
+        "x": 860,
+        "y": 20,
         "wires": [
             [
                 "ctl_fn_build"
             ]
-        ],
-        "passthru": false
+        ]
     },
     {
         "id": "ctl_btn_start",
@@ -555,8 +687,9 @@
         "name": "",
         "group": "grp_controls",
         "order": 7,
-        "width": "0",
+        "width": 0,
         "height": 0,
+        "passthru": false,
         "label": "START learning",
         "tooltip": "begin learning (machine at NORMAL load)",
         "color": "#1a1a1a",
@@ -567,14 +700,13 @@
         "payloadType": "str",
         "topic": "start",
         "topicType": "str",
-        "x": 800,
-        "y": 0,
+        "x": 900,
+        "y": 20,
         "wires": [
             [
                 "ctl_fn_build"
             ]
-        ],
-        "passthru": false
+        ]
     },
     {
         "id": "ctl_btn_normal",
@@ -583,8 +715,9 @@
         "name": "",
         "group": "grp_controls",
         "order": 8,
-        "width": "0",
+        "width": 0,
         "height": 0,
+        "passthru": false,
         "label": "NORMAL (false alarm)",
         "tooltip": "false alarm -> theta += 10% (capped), episode closes",
         "color": "#1a1a1a",
@@ -595,14 +728,13 @@
         "payloadType": "str",
         "topic": "normal",
         "topicType": "str",
-        "x": 840,
-        "y": 0,
+        "x": 940,
+        "y": 20,
         "wires": [
             [
                 "ctl_fn_build"
             ]
-        ],
-        "passthru": false
+        ]
     },
     {
         "id": "ctl_btn_fault",
@@ -611,8 +743,9 @@
         "name": "",
         "group": "grp_controls",
         "order": 9,
-        "width": "0",
+        "width": 0,
         "height": 0,
+        "passthru": false,
         "label": "FAULT (confirmed)",
         "tooltip": "confirmed fault -> theta -= 5% (floored)",
         "color": "#1a1a1a",
@@ -623,14 +756,13 @@
         "payloadType": "str",
         "topic": "fault",
         "topicType": "str",
-        "x": 880,
-        "y": 0,
+        "x": 980,
+        "y": 20,
         "wires": [
             [
                 "ctl_fn_build"
             ]
-        ],
-        "passthru": false
+        ]
     },
     {
         "id": "ctl_fn_store",
@@ -643,8 +775,8 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 690,
-        "y": 620,
+        "x": 790,
+        "y": 640,
         "wires": []
     },
     {
@@ -658,8 +790,8 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 900,
-        "y": 730,
+        "x": 1000,
+        "y": 750,
         "wires": [
             [
                 "ctl_out_fb"
@@ -683,8 +815,8 @@
         "correl": "",
         "expiry": "",
         "broker": "cfg_broker_uns",
-        "x": 1150,
-        "y": 730,
+        "x": 1250,
+        "y": 750,
         "wires": []
     },
     {
@@ -693,7 +825,7 @@
         "z": "f2167687c85f59b3",
         "group": "grp_controls",
         "order": 11,
-        "width": "0",
+        "width": 0,
         "height": 0,
         "name": "",
         "label": "last command",
@@ -704,45 +836,23 @@
         "font": "",
         "fontSize": 14,
         "color": "#1a1a1a",
-        "x": 1150,
-        "y": 770,
+        "x": 1250,
+        "y": 790,
         "wires": []
-    },
-    {
-        "id": "grp_machine",
-        "type": "ui_group",
-        "name": "Machine",
-        "tab": "18a510a20cb04067",
-        "order": 1,
-        "disp": true,
-        "width": "6",
-        "collapse": false,
-        "className": ""
-    },
-    {
-        "id": "grp_events_all",
-        "type": "ui_group",
-        "name": "Events",
-        "tab": "18a510a20cb04067",
-        "order": 2,
-        "disp": true,
-        "width": "6",
-        "collapse": false,
-        "className": ""
     },
     {
         "id": "fn_machine_merge",
         "type": "function",
         "z": "f2167687c85f59b3",
         "name": "machine status merge",
-        "func": "// Column 1: merges State/condition + State/keepalive for BOTH nodes into\n// one banner block per node. The node id comes from the UNS path in msg.topic.\nfunction nodeOf(t) {\n    if (t.indexOf(\"Power-Node-01\") >= 0) return \"g100-01\";\n    if (t.indexOf(\"Vibration-Node-01\") >= 0) return \"vib-01\";\n    return null;\n}\nconst t = String(msg.topic || \"\");\nconst p = msg.payload;\nconst dev = nodeOf(t);\nif (p !== \"heartbeat\" && dev && p && typeof p === \"object\") {\n    if (t.indexOf(\"/State/condition\") >= 0) {\n        flow.set(\"cond_\" + dev, {\n            state: p.state || \"?\", condition_id: p.condition_id || \"-\",\n            confidence: (typeof p.confidence === \"number\") ? p.confidence : null,\n            episode_s: (typeof p.episode_s === \"number\") ? p.episode_s : 0,\n            batch: p.batch || \"\",\n            ts: Date.now()\n        });\n        if (p.batch) flow.set(\"ask_\" + dev, p.batch);\n        else if (p.condition_id === \"unknown\") flow.set(\"ask_\" + dev, \"\");\n    } else if (t.indexOf(\"/State/keepalive\") >= 0) {\n        flow.set(\"ka_\" + dev, { ts: Date.now(), rssi: p.rssi });\n    }\n}\nconst rows = [];\nfor (const d of [\"g100-01\", \"vib-01\"]) {\n    const c = flow.get(\"cond_\" + d);\n    const k = flow.get(\"ka_\" + d);\n    const kaAge = k ? Math.round((Date.now() - k.ts) / 1000) : null;\n    const online = kaAge !== null && kaAge <= 30;\n    const age = c ? Math.round((Date.now() - c.ts) / 1000) : null;\n    const st = c ? c.state : \"?\";\n    const cid = c ? c.condition_id : \"-\";\n    const batch = c && c.batch ? \" \" + c.batch : \"\";\n    let cls = \"ok\", badge = \"?\", l2 = \"\";\n    if (!online) { cls = \"off\"; badge = \"OFFLINE\"; l2 = \"no keepalive beat\"; }\n    else if (st === \"alarm\") {\n        cls = \"alarm\"; badge = \"ALARM\" + batch;\n        l2 = cid === \"unknown\" ? \"unlabeled condition - answer with LABEL\"\n                                : \"alarm episode\";\n    } else if (cid === \"unknown\") {\n        cls = \"attention\"; badge = \"OPEN ASK\" + batch;\n        l2 = \"unlabeled condition - answer with LABEL\";\n    } else if (st === \"learn\") { cls = \"learn\"; badge = \"LEARNING\";\n        l2 = \"capturing normal-behaviour statistics\"; }\n    else if (st === \"idle\") { cls = \"learn\"; badge = \"IDLE\";\n        l2 = \"send START to begin learning\"; }\n    else if (st === \"ok\") { cls = \"ok\"; badge = \"OK\"; l2 = \"monitoring - quiet\"; }\n    else { cls = \"ok\"; badge = st.toUpperCase(); l2 = \"\"; }\n    rows.push({ id: d, badge: badge, cls: cls, l2: l2, cond: cid,\n        conf: (c && c.confidence !== null) ? Math.round(c.confidence * 100) + \"%\" : \"-\",\n        ep: (c && c.episode_s) ? c.episode_s + \" s\" : \"-\",\n        age: (age !== null) ? age + \" s\" : \"-\",\n        rssi: (online && k && typeof k.rssi === \"number\") ? k.rssi + \" dBm\" : \"-\" });\n}\nreturn { payload: rows };\n",
+        "func": "// Column 1: merges State/condition + State/keepalive for BOTH nodes into\n// one banner block per node. The node id comes from the UNS path in msg.topic.\nfunction nodeOf(t) {\n    if (t.indexOf(\"Power-Node-01\") >= 0) return \"g100-01\";\n    if (t.indexOf(\"Vibration-Node-01\") >= 0) return \"vib-01\";\n    return null;\n}\nconst t = String(msg.topic || \"\");\nconst p = msg.payload;\nconst dev = nodeOf(t);\nif (p !== \"heartbeat\" && dev && p && typeof p === \"object\") {\n    if (t.indexOf(\"/State/condition\") >= 0) {\n        flow.set(\"cond_\" + dev, {\n            state: p.state || \"?\", condition_id: p.condition_id || \"-\",\n            confidence: (typeof p.confidence === \"number\") ? p.confidence : null,\n            episode_s: (typeof p.episode_s === \"number\") ? p.episode_s : 0,\n            batch: p.batch || \"\",\n            kind: p.kind || \"\",\n            ts: Date.now()\n        });\n        if (p.batch) flow.set(\"ask_\" + dev, p.batch);\n        else if (p.condition_id === \"unknown\") flow.set(\"ask_\" + dev, \"\");\n    } else if (t.indexOf(\"/State/keepalive\") >= 0) {\n        flow.set(\"ka_\" + dev, { ts: Date.now(), rssi: p.rssi });\n    }\n}\nconst rows = [];\nfor (const d of [\"g100-01\", \"vib-01\"]) {\n    const c = flow.get(\"cond_\" + d);\n    const k = flow.get(\"ka_\" + d);\n    const kaAge = k ? Math.round((Date.now() - k.ts) / 1000) : null;\n    const online = kaAge !== null && kaAge <= 30;\n    const age = c ? Math.round((Date.now() - c.ts) / 1000) : null;\n    const st = c ? c.state : \"?\";\n    const cid = c ? c.condition_id : \"-\";\n    const batch = c && c.batch ? \" \" + c.batch : \"\";\n    const kind = (c && c.kind) || \"\";\n    let cls = \"ok\", badge = \"?\", l2 = \"\";\n    if (!online) { cls = \"off\"; badge = \"OFFLINE\"; l2 = \"no keepalive beat\"; }\n    else if (st === \"alarm\") {\n        cls = \"alarm\"; badge = \"ALARM\" + batch;\n        l2 = cid === \"unknown\" ? \"unlabeled condition - answer with LABEL\"\n                                : \"alarm episode\";\n    } else if (kind === \"fault\") {\n        // a labeled fault recognized while quiet: red by its label (the\n        // State/condition kind), not by the alarm gate\n        cls = \"alarm\"; badge = \"OK\" + batch;\n        l2 = \"learned fault recognized while quiet\";\n    } else if (cid === \"unknown\") {\n        cls = \"attention\"; badge = \"OPEN ASK\" + batch;\n        l2 = \"unlabeled condition - answer with LABEL\";\n    } else if (st === \"learn\") { cls = \"learn\"; badge = \"LEARNING\";\n        l2 = \"capturing normal-behaviour statistics\"; }\n    else if (st === \"idle\") { cls = \"learn\"; badge = \"IDLE\";\n        l2 = \"send START to begin learning\"; }\n    else if (st === \"ok\") { cls = \"ok\"; badge = \"OK\"; l2 = \"monitoring - quiet\"; }\n    else { cls = \"ok\"; badge = st.toUpperCase(); l2 = \"\"; }\n    rows.push({ id: d, badge: badge, cls: cls, l2: l2, cond: cid, kind: kind,\n        conf: (c && c.confidence !== null) ? Math.round(c.confidence * 100) + \"%\" : \"-\",\n        ep: (c && c.episode_s) ? c.episode_s + \" s\" : \"-\",\n        age: (age !== null) ? age + \" s\" : \"-\",\n        rssi: (online && k && typeof k.rssi === \"number\") ? k.rssi + \" dBm\" : \"-\" });\n}\nreturn { payload: rows };\n",
         "outputs": 1,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 700,
-        "y": 120,
+        "x": 800,
+        "y": 140,
         "wires": [
             [
                 "ui_machine"
@@ -760,8 +870,8 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 700,
-        "y": 300,
+        "x": 800,
+        "y": 320,
         "wires": [
             [
                 "ui_events"
@@ -775,17 +885,19 @@
         "group": "grp_machine",
         "name": "node status",
         "order": 1,
-        "width": "0",
-        "height": "0",
-        "format": "<style>\n.bnr { border-radius: 3px; padding: 6px 10px; margin-bottom: 3px; }\n.bnr .l1 { font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }\n.bnr .l2 { font-size: 12px; }\n.bnr.alarm { background: #e05252; color: #fff; }\n.bnr.attention { background: #ffc000; color: #1a1a1a; }\n.bnr.learn { background: #dce9f5; color: #1a1a1a; }\n.bnr.ok { background: #ececec; color: #1a1a1a; }\n.bnr.off { background: #f5f5f5; color: #999; }\n.det { font-size: 12px; color: #444; margin: 0 0 8px 10px; white-space: nowrap; }\n</style>\n<div ng-repeat=\"r in msg.payload\">\n  <div class=\"bnr {{r.cls}}\">\n    <div class=\"l1\">{{r.id}} - {{r.badge}}</div>\n    <div class=\"l2\">{{r.l2}}</div>\n  </div>\n  <div class=\"det\">condition {{r.cond}} - conf {{r.conf}} - episode {{r.ep}} - updated {{r.age}} - {{r.rssi}}</div>\n</div>",
+        "width": "6",
+        "height": "4",
+        "format": "<style>\n.bnr { border-radius: 3px; padding: 6px 10px; margin-bottom: 3px; }\n.bnr .l1 { font-size: 15px; letter-spacing: 0.5px; }\n.bnr .nid { font-size: 12px; opacity: 0.75; margin-right: 6px; }\n.bnr .cond { font-size: 22px; font-weight: 800; margin-right: 8px; }\n.bnr .kind { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 3px; margin-right: 8px; vertical-align: 2px; }\n.bnr .kind-fault { background: #8a1010; color: #fff; }\n.bnr .kind-normal { background: #2e7d32; color: #fff; }\n.bnr .st { font-size: 14px; font-weight: 700; }\n.bnr .l2 { font-size: 12px; }\n.bnr.alarm { background: #e05252; color: #fff; }\n.bnr.attention { background: #ffc000; color: #1a1a1a; }\n.bnr.learn { background: #dce9f5; color: #1a1a1a; }\n.bnr.ok { background: #ececec; color: #1a1a1a; }\n.bnr.off { background: #f5f5f5; color: #999; }\n.det { font-size: 12px; color: #444; margin: 0 0 8px 10px; white-space: nowrap; }\n</style>\n<div ng-repeat=\"r in msg.payload\">\n  <div class=\"bnr {{r.cls}}\">\n    <div class=\"l1\"><span class=\"nid\">{{r.id}}</span><span class=\"cond\">{{r.cond}}</span><span class=\"kind kind-fault\" ng-if=\"r.kind === 'fault'\">FAULT</span><span class=\"kind kind-normal\" ng-if=\"r.kind === 'normal'\">NORMAL</span><span class=\"st\">({{r.badge}})</span></div>\n    <div class=\"l2\">{{r.l2}}</div>\n  </div>\n  <div class=\"det\">conf {{r.conf}} - episode {{r.ep}} - updated {{r.age}} - {{r.rssi}}</div>\n</div>",
         "storeOutMessages": true,
         "fwdInMessages": false,
         "resendOnRefresh": false,
         "templateScope": "local",
         "className": "",
-        "x": 1070,
-        "y": 60,
-        "wires": []
+        "x": 1170,
+        "y": 80,
+        "wires": [
+            []
+        ]
     },
     {
         "id": "ui_events",
@@ -794,17 +906,19 @@
         "group": "grp_events_all",
         "name": "event log",
         "order": 1,
-        "width": "0",
-        "height": "0",
+        "width": "6",
+        "height": "4",
         "format": "<style>\n.evt { border-collapse: collapse; width: 100%; font-size: 12px; }\n.evt th { text-align: left; padding: 2px 5px; color: #555;\n          border-bottom: 1px solid #bbb; white-space: nowrap; }\n.evt td { padding: 3px 5px; border-bottom: 1px solid #eee; }\n.evt td.sum { white-space: normal; word-break: break-word; }\n.evt tr.sev-alarm td { color: #b00000; }\n.evt tr.sev-alarm td.ev { font-weight: 600; }\n</style>\n<table class=\"evt\">\n  <tr><th>time</th><th>node</th><th>event</th><th>condition</th><th>dur</th><th>batch</th><th>summary</th></tr>\n  <tr ng-repeat=\"r in msg.payload\" ng-class=\"'sev-' + r.severity\">\n    <td>{{r.ts}}</td><td>{{r.node}}</td><td class=\"ev\">{{r.event}}</td><td>{{r.condition}}</td>\n    <td>{{r.dur}}</td><td>{{r.batch}}</td><td class=\"sum\">{{r.summary}}</td>\n  </tr>\n</table>",
         "storeOutMessages": true,
         "fwdInMessages": false,
         "resendOnRefresh": false,
         "templateScope": "local",
         "className": "",
-        "x": 1070,
-        "y": 60,
-        "wires": []
+        "x": 1170,
+        "y": 80,
+        "wires": [
+            []
+        ]
     },
     {
         "id": "ctl_btn_reset",
@@ -813,7 +927,7 @@
         "name": "",
         "group": "grp_controls",
         "order": 10,
-        "width": "0",
+        "width": 0,
         "height": 0,
         "passthru": false,
         "label": "RESET node (wipe)",
@@ -826,11 +940,265 @@
         "payloadType": "str",
         "topic": "reset",
         "topicType": "str",
-        "x": 0,
-        "y": 920,
+        "x": 100,
+        "y": 940,
         "wires": [
             [
                 "ctl_fn_build"
+            ]
+        ]
+    },
+    {
+        "id": "ai_note",
+        "type": "comment",
+        "z": "f2167687c85f59b3",
+        "name": "AI assistant — Z.ai GLM chat (env: ZAI_API_KEY, ZAI_MODEL)",
+        "info": "## AI assistant (chat over your UNS data)\n\n**Usage**: type in the ask box, press SEND. The assistant also wakes itself on every new alarm episode.\n\n**Inference**: Z.ai OpenAI-compatible endpoint (https://api.z.ai/api/paas/v4/chat/completions), model defaults to glm-5.3-flash (override with ZAI_MODEL). The model runs forced thinking (docs.z.ai: GLM-5.3-Flash cannot disable it; depth = reasoning_effort low|high|max, server default max). The flow pins reasoning_effort=low (ZAI_REASONING env overrides) and max_tokens 1024 - thinking shares the budget, and max-effort reasoning caused the gateway timeouts and empty replies. Transient failures retry up to 3 attempts silently; a watch analysis that still fails stays silent (the alarm is on the banner), a manual question shows one error row. The assistant is read-only on watch triggers: labeling happens only when the operator names the condition and kind in the ask box. The prompt is intentionally minimal. Requests are serialized (one in flight; manual questions jump the queue; watch analyses take one queue slot and the newest replaces older pending ones).\n\n**Context sent to the model**: live machine status (flow: cond_*, ka_*), last 10 events (flow: eventRows), last 8 chat turns (flow: ai_history).\n\n**Setup**: add ZAI_API_KEY (and optional ZAI_MODEL) to the screenflow service env in docker-compose.override.yml with the values in deploy/.env, then:\nbash bin/compose.sh up -d screenflow\n\n**Auto watch**: ai_fn_watch taps the State/condition inputs; dedup key is node|condition_id|batch|ts_ms, plus a 60 s per-node cooldown. Auto analyses show as yellow \"watch\" bubbles.\n\n**Write access**: the assistant answers asks itself (skills.md Skill 2). A trailing {\"ai_action\":{...}} block in its reply is validated then published to Action/feedback with by=agent: label (prefer by batch id; kind defaults to fault), discard, normal, fault. reset and start are refused - human-only (skills.md non-negotiables). Sends AND refusals are logged in the chat as the audit trail (green AI-write / red bubbles).",
+        "x": 500,
+        "y": 1000,
+        "wires": []
+    },
+    {
+        "id": "ai_ask",
+        "type": "ui_text_input",
+        "z": "f2167687c85f59b3",
+        "name": "ask",
+        "label": "ask the assistant",
+        "tooltip": "question about machine state, alarms, events",
+        "group": "grp_ai",
+        "order": 1,
+        "width": "12",
+        "height": "1",
+        "passthru": false,
+        "mode": "text",
+        "delay": 300,
+        "topic": "aiQuestion",
+        "sendOnBlur": true,
+        "className": "",
+        "topicType": "str",
+        "x": 250,
+        "y": 1060,
+        "wires": [
+            [
+                "ai_fn_store"
+            ]
+        ]
+    },
+    {
+        "id": "ai_fn_build",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "build Z.ai request",
+        "func": "// AI assistant: dashboard question + live flow context -> Z.ai chat completion.\n// Env (screenflow service in docker-compose.override.yml): ZAI_API_KEY, ZAI_MODEL (default glm-5.3-flash).\n// msg.auto === true means this request was triggered by the alarm watcher (ai_fn_watch).\n// The reply may end with an {\"ai_action\":{...}} block: ai_fn_reply validates and\n// publishes it (label | discard | normal | fault; reset/start are refused).\n// The request body is kept in ai_last_req so ai_fn_reply can retry once on\n// transient Z.ai gateway errors (\"no response from server\").\nconst key = env.get('ZAI_API_KEY') || '';\nconst model = env.get('ZAI_MODEL') || 'glm-5.3-flash';\nconst q = String(msg.payload || '').trim();\nif (!q) return null;\n\nlet h = flow.get('ai_history') || [];\nh.push({ ts: new Date().toISOString().replace('T', ' ').slice(0, 19), role: 'user', text: q, auto: msg.auto === true });\nif (h.length > 30) h = h.slice(-30);\nflow.set('ai_history', h);\n\nif (!key) {\n    h.push({ ts: '', role: 'assistant', text: 'ZAI_API_KEY is not set. Add it to the screenflow service env in docker-compose.override.yml, then: bash bin/compose.sh up -d screenflow', err: true });\n    flow.set('ai_history', h);\n    return [null, { payload: h }];\n}\n\nfunction condOf(d) {\n    const c = flow.get('cond_' + d);\n    const k = flow.get('ka_' + d);\n    if (!c && !k) return null;\n    return { node: d,\n        online: k ? ((Date.now() - k.ts) <= 30000) : false,\n        state: c ? c.state : '?',\n        condition_id: c ? c.condition_id : '-',\n        kind: (c && c.kind) || '',\n        confidence: c ? c.confidence : null,\n        episode_s: c ? c.episode_s : 0,\n        open_batch: (c && c.batch) || '',\n        keepalive_age_s: k ? Math.round((Date.now() - k.ts) / 1000) : null };\n}\n// slugs already labeled on each node (from the event log): the model must\n// reuse these instead of inventing near-duplicates (skills.md Skill 2)\nfunction knownOf(d) {\n    const rows = flow.get('eventRows') || [];\n    const out = [];\n    for (const r of rows) {\n        if (r.node === d && r.event === 'label' && r.condition &&\n            out.indexOf(r.condition) < 0) out.push(r.condition);\n    }\n    return out;\n}\nconst context = {\n    nodes: ['g100-01', 'vib-01'].map(function (d) {\n        const n = condOf(d);\n        if (n) n.known_conditions = knownOf(d);\n        return n;\n    }).filter(Boolean),\n    recent_events: (flow.get('eventRows') || []).slice(0, 10)\n};\n\n// prompt kept VERY short (2026-11-27: the watch request with the long\n// prompt kept tripping the gateway on non-streamed calls; short manual\n// questions always worked). Labeling is operator-driven ONLY: the model\n// never labels on its own - the operator says normal/fault + the slug;\n// ai_fn_reply enforces it (auto requests cannot carry actions at all).\nlet sys = 'You are the UNS machine dashboard assistant. Answer from the JSON data '\n    + 'in the user message only, in 1-3 short sentences. Plain text, no markdown. '\n    + 'To label: ONLY when the operator names the condition and says normal or fault, append one block per affected node (both nodes of the machine = two blocks) and nothing after it: '\n    + '{\"ai_action\":{\"action\":\"label\",\"label\":\"speed_1\",\"kind\":\"normal\",\"batch\":\"P0001\",\"node\":\"g100-01\"}} '\n    + 'batch = the node open_batch when present; node = g100-01 or vib-01; label = short snake_case. '\n    + 'Never send the block unless the operator named the condition and kind. Never send any other action.';\nconst msgs = [{ role: 'system', content: sys }];\nfor (const m of h.filter(function (x) { return !x.err; }).slice(-8)) {\n    msgs.push({ role: m.role, content: m.text });\n}\nconst lastUser = msgs[msgs.length - 1];\nif (lastUser && lastUser.role === 'user') {\n    lastUser.content = lastUser.content + '\\n\\nLive data (JSON):\\n' + JSON.stringify(context);\n}\n\n// single-flight (2026-11-27 log): the gateway drops concurrent\n// connections from one key (double-watch ETIMEDOUT), so ONE request is in\n// flight; the rest queue - manual questions at the FRONT, watch triggers\n// at the back, cap 4 (overflow drops the oldest). A stuck slot\n// self-heals after 180 s without a reply.\n// docs.z.ai (chat-completion + thinking-mode pages, checked 2026-11-27):\n// glm-5.3-flash runs FORCED thinking - thinking.type can only be\n// 'enabled' and the depth knob is reasoning_effort (flash supports\n// low|high|max; server DEFAULT = max). Max-effort reasoning on\n// non-streamed calls caused the ETIMEDOUT / no-response-from-server /\n// 200-empty failures, so pin it LOW; ZAI_REASONING=high|max overrides.\n// Thinking shares max_tokens (2026-11-27 curl proof: a 50-token cap\n// produced reasoning_tokens 48, content \"\", finish_reason length).\nconst body = { model: model, messages: msgs, stream: false, temperature: 0.3,\n    max_tokens: 2048,\n    thinking: { type: 'enabled' },\n    reasoning_effort: 'low' };\nconst effort = String(env.get('ZAI_REASONING') || '').toLowerCase();\nif (effort === 'low' || effort === 'high' || effort === 'max')\n    body.reasoning_effort = effort;\nconst busy = flow.get('ai_busy');\nconst stale = busy && Date.now() - (flow.get('ai_busy_ts') || 0) > 90000;\nif (busy && !stale) {\n    // manual questions queue at the FRONT (they always get the slot next).\n    // Watch triggers take ONE queue slot and the newest replaces an older\n    // pending watch analysis: both nodes alarming together analyze\n    // back-to-back, seconds apart, instead of the second being dropped.\n    let q = flow.get('ai_queue') || [];\n    if (msg.auto === true) {\n        q = q.filter(x => x.auto !== true);\n        q.push({ body: body, auto: true });\n    } else {\n        q.unshift({ body: body, auto: false });\n    }\n    if (q.length > 4) q = q.slice(0, 4);\n    flow.set('ai_queue', q);\n    return [null, { payload: h }];         // queued: nothing sent this tick\n}\n// ai_last_req mirrors the IN-FLIGHT request only - a retry must never\n// pick up a queued question's body (2026-11-27 overlap bug)\nflow.set('ai_last_req', body);\nflow.set('ai_busy', true);\nflow.set('ai_busy_ts', Date.now());\nmsg.headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key };\nmsg.payload = body;\nreturn [msg, { payload: h }];",
+        "outputs": 2,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 520,
+        "y": 1060,
+        "wires": [
+            [
+                "ai_http"
+            ],
+            [
+                "ai_chat"
+            ]
+        ]
+    },
+    {
+        "id": "ai_http",
+        "type": "http request",
+        "z": "f2167687c85f59b3",
+        "name": "Z.ai chat/completions",
+        "method": "POST",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "https://api.z.ai/api/paas/v4/chat/completions",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "none",
+        "senderr": false,
+        "x": 760,
+        "y": 1060,
+        "wires": [
+            [
+                "ai_fn_reply"
+            ]
+        ]
+    },
+    {
+        "id": "ai_fn_reply",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "extract reply",
+        "func": "// Extract the assistant reply (or the Z.ai error) into the chat log.\n// WRITE PATH (agent/skills.md Skill 2+3): a trailing {\"ai_action\":{...}} block in\n// the reply is validated, then published to Action/feedback with by=agent.\n// Allowed: label | discard | normal | fault. NEVER reset | start (human-only\n// non-negotiables). Sends AND refusals are logged in the chat (audit trail).\n// TRANSIENT Z.ai failures (5xx / \"no response from server\") are retried once\n// via output 3 -> ai_http; the request body comes from ai_last_req.\nconst BASES = {\n    'g100-01': 'v1/Plant01/Motor-Test-Area/Line1/Power-Node-01',\n    'vib-01':  'v1/Plant01/Motor-Test-Area/Line1/Vibration-Node-01'\n};\nconst ALLOWED = ['label', 'discard', 'normal', 'fault'];\nconst BLOCKED = ['reset', 'start'];\nfunction slugify(s) {\n    return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_')\n        .replace(/^_+|_+$/g, '').slice(0, 24);\n}\nlet h = flow.get('ai_history') || [];   // let: the trim below reassigns h\nconst ts = new Date().toISOString().replace('T', ' ').slice(0, 19);\nlet text, pub = null, retry = null;\nconst isAuto = msg.auto === true;\n// classify the Z.ai outcome: ok | transient (silent retries) | fatal (log)\n// Transient = HTTP 5xx / connection errors (ETIMEDOUT etc.), the gateway's\n// \"no response from server\", AND the empty 200 (HTTP ok, zero content) -\n// all the same gateway give-up in different costumes (2026-11-27 logs).\n// Transients retry up to 3 attempts (paced by the 3 s delay node) and stay\n// OUT of the chat; after the last attempt a manual question shows one\n// error row, a watch trigger stays silent (the alarm is on the banner).\nconst AI_MAX_TRIES = 3;\nconst rawErr = (msg.payload && msg.payload.error && msg.payload.error.message)\n    || (typeof msg.payload === 'string' ? msg.payload : '')\n    || (msg.error && msg.error.message) || '';\nconst ch = (msg.statusCode === 200 && msg.payload && msg.payload.choices && msg.payload.choices[0]) || null;\nconst content = (ch && ch.message && typeof ch.message.content === 'string') ? ch.message.content : '';\nconst emptyBody = msg.statusCode === 200 && !content.trim();\nconst transient = msg.statusCode !== 200 && (!msg.statusCode || msg.statusCode >= 500\n    || /no response|timeout|etimedout|econn|overloaded|temporarily/i.test(rawErr));\nif (emptyBody || transient) {\n    const tries = (flow.get('ai_tries') || 0) + 1;\n    flow.set('ai_tries', tries);\n    if (flow.get('ai_last_req') && tries < AI_MAX_TRIES) {\n        // silent retry: paced by the 3 s delay node on the retry wire\n        const key = env.get('ZAI_API_KEY') || '';\n        retry = { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },\n                  payload: flow.get('ai_last_req'), auto: isAuto };\n    } else {\n        flow.set('ai_tries', 0);\n        if (!isAuto) {   // watch failures stay out of the chat by design\n            if (emptyBody) {\n                // content empty = the thinking phase ate the output budget\n                // (finish_reason \"length\") or the gateway gave up. Report the\n                // numbers so the cause is visible from the dashboard alone.\n                const u = (msg.payload && msg.payload.usage) || {};\n                const rt = (u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens) || 0;\n                text = 'Z.ai returned NO content after ' + AI_MAX_TRIES + ' attempts'\n                    + ' (finish_reason=' + ((ch && ch.finish_reason) || '?')\n                    + ', reasoning_tokens=' + rt + '/' + (u.completion_tokens || '?')\n                    + '). Thinking ate the budget - raise max_tokens in ai_fn_build or set ZAI_REASONING=low.';\n            } else {\n                text = 'Z.ai error ' + msg.statusCode + ' after ' + AI_MAX_TRIES + ' attempts: ' + String(rawErr || 'request failed').slice(0, 300);\n            }\n            h.push({ ts: ts, role: 'assistant', text: text, err: true });\n        }\n    }\n} else if (msg.statusCode !== 200) {   // fatal: 4xx etc. - no retry\n    flow.set('ai_tries', 0);\n    text = 'Z.ai error ' + msg.statusCode + ': ' + String(rawErr || 'request failed').slice(0, 300);\n    h.push({ ts: ts, role: 'assistant', text: text, err: true });\n} else {\n    flow.set('ai_tries', 0);\n    text = content;\n    // find ALL ai_action blocks - the model sends one per node (skills.md:\n    // a physical event opens asks on several nodes of one machine; answer\n    // every open batch with the SAME slug). Strip them from the display text.\n    const KEY = '{\"ai_action\"';\n    const acts = [];\n    let pos = text.indexOf(KEY);\n    while (pos >= 0 && acts.length < 6) {\n        let depth = 0, end = -1;\n        for (let j = pos; j < text.length; j++) {\n            if (text[j] === '{') depth++;\n            else if (text[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }\n        }\n        if (end < 0) { acts.push({ why: 'unterminated ai_action block (reply truncated?)' }); text = text.slice(0, pos); break; }\n        let a = null, perr = '';\n        try { a = JSON.parse(text.slice(pos, end)).ai_action; }\n        catch (e) { perr = 'ai_action block is not valid JSON'; }\n        acts.push((a && typeof a === 'object') ? { act: a } : { why: perr || 'block has no ai_action member' });\n        text = (text.slice(0, pos) + text.slice(end)).replace(/```[a-z]*/g, '');\n        pos = text.indexOf(KEY);\n    }\n    text = text.trim();\n    h.push({ ts: ts, role: 'assistant', text: text });\n    if (acts.length) {\n        const refuse = function (r) {\n            h.push({ ts: '', role: 'assistant', text: 'ACTION NOT SENT - ' + r, err: true });\n        };\n        const pubs = [];\n        for (const a of acts) {\n            if (a.why) { refuse(a.why); continue; }\n            if (isAuto) {\n                // watch requests are read-only: labeling is operator-driven\n                // (the operator names the condition and kind). Drop silently;\n                // debug sidebar only, nothing published, nothing in the chat.\n                node.warn('ai: dropped an action block on a watch trigger - labeling is operator-only');\n                continue;\n            }\n            const act = a.act;\n            const dev = String(act.node || '');\n            const verb = String(act.action || '');\n            const k = flow.get('ka_' + dev);\n            const cnd = flow.get('cond_' + dev);\n            const online = !!(k && (Date.now() - k.ts) <= 30000);\n            const st = cnd ? cnd.state : '?';\n            const send = function (o) {\n                const key = dev + '|' + JSON.stringify(o);\n                if (flow.get('ai_last_act') === key) { refuse('duplicate of the last action already sent'); return; }\n                flow.set('ai_last_act', key);\n                pubs.push({ payload: o, topic: BASES[dev] + '/Action/feedback' });\n                h.push({ ts: ts, role: 'assistant', text: 'WROTE to ' + dev + ': ' + JSON.stringify(o), act: true });\n            };\n            if (BLOCKED.indexOf(verb) >= 0) refuse(verb + ' is human-only (skills.md non-negotiable)');\n            else if (ALLOWED.indexOf(verb) < 0) refuse('unknown action: ' + verb);\n            else if (!BASES[dev]) refuse('unknown node: ' + dev);\n            else if (!online) refuse(dev + ' is offline (keepalive stale) - publish would be lost');\n            else if (verb === 'label') {\n                const slug = slugify(String(act.label || ''));\n                const batch = String(act.batch || '').trim();\n                if (!slug) refuse('label: no label slug given');\n                else if (batch && !/^[A-Za-z0-9]{1,11}$/.test(batch)) refuse('label: bad batch id: ' + batch);\n                else if (!batch && !(cnd && (cnd.state === 'alarm' || cnd.condition_id === 'unknown'\n        || cnd.condition_id === 'unidentified')))\n    refuse('label: no batch id and no open episode on ' + dev);   // firmware: any open episode is live-labelable\n                else if (st === 'idle' || st === 'learn' || st === '?') refuse('label: node state is ' + st + ' - labels wait for ok/alarm (skills.md Skill 3)');\n                else {\n                    const o = { action: 'label', label: slug, by: 'agent',\n                                kind: (act.kind === 'normal') ? 'normal' : 'fault' };\n                    if (batch) o.batch = batch;\n                    send(o);\n                }\n            } else if (verb === 'discard') {\n                const batch = String(act.batch || '').trim();\n                if (!/^[A-Za-z0-9]{1,11}$/.test(batch)) refuse('discard: needs a valid batch id');\n                else send({ action: 'discard', batch: batch, by: 'agent' });\n            } else send({ action: verb, by: 'agent' });   // normal | fault: sparing governance\n        }\n        pub = pubs.length ? pubs : null;\n    }\n}\nif (h.length > 30) h = h.slice(-30);\nflow.set('ai_history', h);\nlet nextOut = null;\nif (!retry) {\n    // the flight slot frees only when no retry is pending; then pop the queue\n    const q = flow.get('ai_queue') || [];\n    const next = q.shift() || null;\n    flow.set('ai_queue', q);\n    if (next) {\n        flow.set('ai_busy', true);\n        flow.set('ai_busy_ts', Date.now());\n        flow.set('ai_last_req', next.body);   // the popped request is now in flight\n        const key = env.get('ZAI_API_KEY') || '';\n        nextOut = { headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },\n                    payload: next.body, auto: next.auto };\n    } else {\n        flow.set('ai_busy', false);\n    }\n}\nreturn [{ payload: h }, pub, retry, nextOut];",
+        "outputs": 4,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 980,
+        "y": 1060,
+        "wires": [
+            [
+                "ai_chat"
+            ],
+            [
+                "ai_out_fb"
+            ],
+            [
+                "ai_retry_delay"
+            ],
+            [
+                "ai_http"
+            ]
+        ]
+    },
+    {
+        "id": "ai_retry_delay",
+        "type": "delay",
+        "z": "f2167687c85f59b3",
+        "name": "pace retry 3 s",
+        "pauseType": "delay",
+        "timeout": "3",
+        "timeoutUnits": "seconds",
+        "rate": "1",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": false,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 1150,
+        "y": 1140,
+        "wires": [
+            [
+                "ai_http"
+            ]
+        ]
+    },
+    {
+        "id": "ai_out_fb",
+        "type": "mqtt out",
+        "z": "f2167687c85f59b3",
+        "name": "out: Action/feedback (assistant, by=agent)",
+        "topic": "",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "cfg_broker_uns",
+        "x": 1210,
+        "y": 980,
+        "wires": []
+    },
+    {
+        "id": "ai_chat",
+        "type": "ui_template",
+        "z": "f2167687c85f59b3",
+        "group": "grp_ai",
+        "name": "chat log",
+        "order": 2,
+        "width": "12",
+        "height": "4",
+        "format": "<style>\n.chat { font-size: 12px; }\n.chat .row { margin-bottom: 6px; }\n.chat .who { font-weight: 700; color: #555; margin-right: 4px; }\n.chat .txt { display: inline-block; padding: 4px 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; max-width: 100%; }\n.chat .you .txt { background: #dce9f5; }\n.chat .bot .txt { background: #ececec; }\n.chat .err .txt { background: #f5d6d6; color: #8a1010; }\n.chat .auto .txt { background: #fff3cd; }\n.chat .act .txt { background: #e2efe2; }\n.chat .ts { color: #999; font-size: 10px; margin-left: 6px; }\n</style>\n<div class=\"chat\">\n  <div ng-repeat=\"r in msg.payload | limitTo:-14\">\n    <div class=\"row\" ng-class=\"r.role === 'user' ? (r.auto ? 'auto' : 'you') : (r.err ? 'err' : (r.act ? 'act' : 'bot'))\">\n      <span class=\"who\">{{ r.role === 'user' ? (r.auto ? 'watch' : 'you') : (r.act ? 'AI write' : 'AI') }}</span>\n      <span class=\"txt\">{{ r.text }}</span>\n      <span class=\"ts\" ng-if=\"r.ts\">{{ r.ts }}</span>\n    </div>\n  </div>\n</div>",
+        "storeOutMessages": true,
+        "fwdInMessages": false,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 1200,
+        "y": 1060,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "ai_fn_store",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "store question",
+        "func": "// Store the typed question; the SEND button sends it.\nif (msg.payload !== undefined) flow.set('ai_question', String(msg.payload).trim());\nreturn null;",
+        "outputs": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 250,
+        "y": 1100,
+        "wires": []
+    },
+    {
+        "id": "ai_send",
+        "type": "ui_button",
+        "z": "f2167687c85f59b3",
+        "name": "",
+        "group": "grp_ai",
+        "order": 3,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "label": "SEND",
+        "tooltip": "send the question to the assistant",
+        "color": "#1a1a1a",
+        "bgcolor": "#c8c8c8",
+        "className": "",
+        "icon": "",
+        "payload": "send",
+        "payloadType": "str",
+        "topic": "aiSend",
+        "topicType": "str",
+        "x": 250,
+        "y": 1140,
+        "wires": [
+            [
+                "ai_fn_send"
+            ]
+        ]
+    },
+    {
+        "id": "ai_fn_send",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "send question",
+        "func": "const q = String(flow.get('ai_question') || '').trim();\nif (!q) return null;\nmsg.payload = q;\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 480,
+        "y": 1140,
+        "wires": [
+            [
+                "ai_fn_build"
+            ]
+        ]
+    },
+    {
+        "id": "ai_fn_watch",
+        "type": "function",
+        "z": "f2167687c85f59b3",
+        "name": "alarm watch (auto-trigger)",
+        "func": "// Fired from the State/condition MQTT inputs: wakes the assistant on a new alarm episode.\n// Dedup: same node|condition|batch|ts_ms never re-triggers; plus a 60 s per-node cooldown.\nconst p = msg.payload;\nif (!p || typeof p !== 'object' || p.state !== 'alarm') return null;\nconst t = String(msg.topic || '');\nconst dev = t.indexOf('Power-Node-01') >= 0 ? 'g100-01' : (t.indexOf('Vibration-Node-01') >= 0 ? 'vib-01' : null);\nif (!dev) return null;\nconst key = dev + '|' + (p.condition_id || '') + '|' + (p.batch || '') + '|' + (p.ts_ms || '');\nif (flow.get('ai_last_trigger') === key) return null;\nconst lastTs = flow.get('ai_auto_ts_' + dev) || 0;\nif (Date.now() - lastTs < 60000) return null;\nflow.set('ai_last_trigger', key);\nflow.set('ai_auto_ts_' + dev, Date.now());\nmsg.auto = true;\nmsg.payload = 'Alarm just fired on ' + dev + ' (condition: ' + (p.condition_id || 'unknown') + ', confidence: ' + (typeof p.confidence === 'number' ? p.confidence : '?') + ', episode ' + (p.episode_s || 0) + ' s' + (p.batch ? ', batch ' + p.batch : '') + '). Analyse it for the operator.';\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 520,
+        "y": 960,
+        "wires": [
+            [
+                "ai_fn_build"
             ]
         ]
     }
