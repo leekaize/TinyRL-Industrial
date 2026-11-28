@@ -189,6 +189,7 @@ public:
 
   int  size() const { return n_; }
   bool has(const char* slug) const { return find(slug) >= 0; }
+  int  indexOf(const char* slug) const { return find(slug); }  // -1 = absent
   const Condition& at(int i) const { return lib_[i]; }
   void clear() { n_ = 0; }
 

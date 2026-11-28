@@ -59,21 +59,26 @@ void UnsMessaging::maintain() {
 
 bool UnsMessaging::publishCondition(const char* state, const char* cond_id,
                                     float conf, uint32_t episode_s,
-                                    bool retained, const char* batch) {
+                                    bool retained, const char* batch,
+                                    const char* kind) {
   char j[224];
   int n;
+  char kb[24] = "";                // "kind":... fragment, empty = absent
+  if (kind && kind[0])
+    snprintf(kb, sizeof(kb), "\"kind\":\"%s\",", kind);
   if (batch && batch[0]) {
     // the ask's answer-address: label/discard by this id
     n = snprintf(j, sizeof(j),
       "{\"state\":\"%s\",\"condition_id\":\"%s\",\"confidence\":%.2f,"
-      "\"episode_s\":%lu,\"batch\":\"%s\",\"ts_ms\":%lu}",
-      state, cond_id, conf, (unsigned long)episode_s, batch,
+      "\"episode_s\":%lu,\"batch\":\"%s\",%s\"ts_ms\":%lu}",
+      state, cond_id, conf, (unsigned long)episode_s, batch, kb,
       (unsigned long)millis());
   } else {
     n = snprintf(j, sizeof(j),
       "{\"state\":\"%s\",\"condition_id\":\"%s\",\"confidence\":%.2f,"
-      "\"episode_s\":%lu,\"ts_ms\":%lu}",
-      state, cond_id, conf, (unsigned long)episode_s, (unsigned long)millis());
+      "\"episode_s\":%lu,%s\"ts_ms\":%lu}",
+      state, cond_id, conf, (unsigned long)episode_s, kb,
+      (unsigned long)millis());
   }
   bool ok = n > 0 && mqtt_.publish(t_cond_, j, retained);
   if (ok) pub_count_++;

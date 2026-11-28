@@ -5,6 +5,8 @@
 //   State/condition  retained, on change:
 //     {"state","condition_id","confidence","episode_s","ts_ms"}
 //     +"batch":"Pxxxx" ONLY while an ask is live (its stored batch id)
+//     +"kind":"normal"|"fault" ONLY when condition_id names a labeled
+//     library entry (absent for idle/learning/unknown/unlabelled states)
 //   State/event      per episode transition, not retained:
 //     {"event","condition_id","severity","duration_s","summary",
 //      "meas":{<feature>:<value>,...},"ts_ms"}
@@ -54,7 +56,8 @@ public:
 
   bool publishCondition(const char* state, const char* cond_id,
                         float confidence, uint32_t episode_s, bool retained,
-                        const char* batch = nullptr);
+                        const char* batch = nullptr,
+                        const char* kind = nullptr);
   bool publishEvent(const char* ev, const char* sev, const char* cid,
                     uint32_t duration_s, const char* summary,
                     const float* means);

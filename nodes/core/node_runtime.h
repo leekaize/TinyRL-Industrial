@@ -55,7 +55,7 @@ public:
   float       gateR() const;
   float       acc() const;
   const char* phase() const;       // idle | cal | fit | mon | alarm
-  const char* conditionId() const;
+  const char* conditionId(int* kind_idx = nullptr) const;  // *kind_idx = lib index of the named condition, -1 = unlabelled
   bool        episodeOpen() const;
   uint32_t    stepCount() const;
   uint32_t    libSize() const;

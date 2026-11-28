@@ -24,7 +24,8 @@ static void slugify(const char* in, char* out, size_t len) {
   out[o] = 0;
 }
 
-const char* SensorNodeApp::conditionId() const {
+const char* SensorNodeApp::conditionId(int* kind_idx) const {
+  if (kind_idx) *kind_idx = -1;    // -1 = unlabelled: no kind on the wire
   if (!mon_.thetaReady()) return mon_.learning() ? "learning" : "idle";
   if (mon_.alarmed()) {
     if (ep_.isOpen()) {
@@ -33,6 +34,9 @@ const char* SensorNodeApp::conditionId() const {
       // is "unidentified" - alarmed, batch maturing, no upstream call.
       if (strcmp(ep_.cond(), "unknown") == 0 &&
           ep_.count() < cfg::ASK_MIN_BATCH) return "unidentified";
+      // a recognized/relabelled episode names a library condition: its
+      // kind rides along (dashboards colour by it)
+      if (kind_idx) *kind_idx = lib_.indexOf(ep_.cond());
       return ep_.cond();
     }
     return "unknown";
@@ -41,7 +45,10 @@ const char* SensorNodeApp::conditionId() const {
   // 2026-11-15: a learned fault shows as recognised while quiet - the
   // net predicts it, so it no longer alarms; the name is the evidence)
   int m = lib_.match(last_raw_, mon_.space());
-  if (m >= 0) return lib_.at(m).id;
+  if (m >= 0) {
+    if (kind_idx) *kind_idx = m;
+    return lib_.at(m).id;
+  }
   return "normal";
 }
 
@@ -69,9 +76,14 @@ const char* SensorNodeApp::libName(int idx) const {
 
 void SensorNodeApp::publishCondition(bool retained) {
   uint32_t now = millis();
-  msg_.publishCondition(mon_.stateString(), conditionId(),
+  int ki = -1;
+  const char* cid = conditionId(&ki);
+  const char* kind = nullptr;      // only a labeled library entry carries one
+  if (ki >= 0) kind = (lib_.at(ki).kind == COND_NORMAL) ? "normal" : "fault";
+  msg_.publishCondition(mon_.stateString(), cid,
                         mon_.confidence(), ep_.duration(now), retained,
-                        ep_pend_ >= 0 ? pend_.at(ep_pend_).id : nullptr);
+                        ep_pend_ >= 0 ? pend_.at(ep_pend_).id : nullptr,
+                        kind);
 }
 
 void SensorNodeApp::saveAll() {
